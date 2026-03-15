@@ -9,144 +9,6 @@ use crate::ast::*;
 static PATTERN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\.\.\.|\(|\)|[a-zA-Z_]\w*|\d+").unwrap());
 
-// ── Param substitution ─────────────────────────────────────────────
-
-fn sub_dim(d: &Dim, config: &HashMap<String, ConfigValue>) -> Dim {
-    match d {
-        Dim::Named(name) if name.starts_with("param.") => {
-            let key = &name[6..];
-            match config.get(key) {
-                Some(ConfigValue::Int(n)) => Dim::Concrete(*n),
-                Some(ConfigValue::Float(f)) => Dim::Concrete(*f as i64),
-                _ => d.clone(),
-            }
-        }
-        _ => d.clone(),
-    }
-}
-
-fn sub_type(t: &TensorType, config: &HashMap<String, ConfigValue>) -> TensorType {
-    TensorType {
-        dtype: t.dtype.clone(),
-        shape: t.shape.iter().map(|d| sub_dim(d, config)).collect(),
-    }
-}
-
-fn sub_atom_in_specifiers(a: &Atom, config: &HashMap<String, ConfigValue>) -> Atom {
-    match a {
-        Atom::Name(name) if name.starts_with("param.") => {
-            let key = &name[6..];
-            match config.get(key) {
-                Some(ConfigValue::Int(n)) => Atom::Int(*n),
-                Some(ConfigValue::Float(f)) => Atom::Float(*f),
-                _ => a.clone(),
-            }
-        }
-        _ => a.clone(),
-    }
-}
-
-fn sub_op(op: &Op, config: &HashMap<String, ConfigValue>) -> Op {
-    let kind = match &op.kind {
-        OpKind::View { pattern, axes } => OpKind::View {
-            pattern: pattern.clone(),
-            axes: axes.clone(),
-        },
-        OpKind::Map { function } => OpKind::Map {
-            function: function.clone(),
-        },
-        OpKind::Fold { pattern, function } => OpKind::Fold {
-            pattern: pattern.clone(),
-            function: function.clone(),
-        },
-        OpKind::Tile { pattern, axes } => OpKind::Tile {
-            pattern: pattern.clone(),
-            axes: axes.clone(),
-        },
-        OpKind::Gather { pattern } => OpKind::Gather {
-            pattern: pattern.clone(),
-        },
-        OpKind::Scatter { pattern } => OpKind::Scatter {
-            pattern: pattern.clone(),
-        },
-        OpKind::Contract { pattern } => OpKind::Contract {
-            pattern: pattern.clone(),
-        },
-        OpKind::Literal { value } => OpKind::Literal {
-            value: value.clone(),
-        },
-        OpKind::Random { function } => OpKind::Random {
-            function: function.clone(),
-        },
-        OpKind::Call { target } => OpKind::Call {
-            target: target.clone(),
-        },
-        OpKind::Loop {
-            target,
-            over,
-            count,
-        } => OpKind::Loop {
-            target: target.clone(),
-            over: over.clone(),
-            count: sub_atom_in_specifiers(count, config),
-        },
-    };
-
-    Op {
-        kind,
-        outputs: op.outputs.clone(),
-        output_types: op
-            .output_types
-            .iter()
-            .map(|t| t.as_ref().map(|t| sub_type(t, config)))
-            .collect(),
-        // args are wire names — NOT substituted
-        args: op.args.clone(),
-        comments: op.comments.clone(),
-    }
-}
-
-fn substitute_params(m: &Module, config: &HashMap<String, ConfigValue>) -> Module {
-    let functions = m
-        .functions
-        .iter()
-        .map(|(name, f)| {
-            let params = f
-                .params
-                .iter()
-                .map(|p| Param {
-                    name: p.name.clone(),
-                    ty: sub_type(&p.ty, config),
-                })
-                .collect();
-            let returns = f
-                .returns
-                .iter()
-                .map(|r| Param {
-                    name: r.name.clone(),
-                    ty: sub_type(&r.ty, config),
-                })
-                .collect();
-            let ops = f.ops.iter().map(|op| sub_op(op, config)).collect();
-            (
-                name.clone(),
-                Function {
-                    name: f.name.clone(),
-                    comments: f.comments.clone(),
-                    params,
-                    returns,
-                    ops,
-                },
-            )
-        })
-        .collect();
-
-    Module {
-        header_comments: m.header_comments.clone(),
-        functions,
-    }
-}
-
 // ── Axis inference ──────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -325,20 +187,10 @@ fn infer_axes(m: &mut Module) {
     }
 }
 
-// ── Config value ────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(untagged)]
-pub enum ConfigValue {
-    Int(i64),
-    Float(f64),
-    Vec(Vec<f64>),
-}
-
 // ── Public API ──────────────────────────────────────────────────────
 
-pub fn resolve(m: &Module, config: &HashMap<String, ConfigValue>) -> Module {
-    let mut resolved = substitute_params(m, config);
+pub fn resolve(m: &Module) -> Module {
+    let mut resolved = m.clone();
     infer_axes(&mut resolved);
     resolved
 }

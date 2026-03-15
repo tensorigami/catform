@@ -698,8 +698,7 @@ transformer(
     fn json_roundtrip_resolved() {
         let source = std::fs::read_to_string("../models/qwen3/model.cat").unwrap();
         let m = parse(&source);
-        let cfg = crate::config::load_config("../models/qwen3/0_6b/config.toml");
-        let resolved = crate::resolve::resolve(&m, &cfg);
+        let resolved = crate::resolve::resolve(&m);
         let json = serde_json::to_string(&resolved).unwrap();
         let m2: crate::ast::Module = serde_json::from_str(&json).unwrap();
         assert_eq!(resolved, m2);
@@ -709,8 +708,7 @@ transformer(
     fn json_roundtrip_flat() {
         let source = std::fs::read_to_string("../models/qwen3/model.cat").unwrap();
         let m = parse(&source);
-        let cfg = crate::config::load_config("../models/qwen3/0_6b/config.toml");
-        let resolved = crate::resolve::resolve(&m, &cfg);
+        let resolved = crate::resolve::resolve(&m);
         let flat = crate::flatten::flatten(&resolved, "main");
         let json = serde_json::to_string(&flat).unwrap();
         let m2: crate::ast::Module = serde_json::from_str(&json).unwrap();

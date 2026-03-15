@@ -1,0 +1,13 @@
+[package]
+name = "catform"
+version = "0.1.0"
+edition = "2024"
+description = "Categorical form tensor program toolchain"
+license = "MIT"
+
+[dependencies]
+indexmap = { version = "2", features = ["serde"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"

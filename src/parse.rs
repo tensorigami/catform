@@ -83,24 +83,6 @@ fn tokenize(source: &str) -> Vec<String> {
             {
                 i += 1;
             }
-            // Check for _* suffix (e.g., act_*)
-            if i < bytes.len()
-                && bytes[i] == b'*'
-                && i > start
-                && bytes[i - 1] == b'_'
-            {
-                i += 1; // include *
-            } else if i + 4 < bytes.len()
-                && bytes[i] == b'{'
-                && bytes[i + 1] == b'*'
-                && bytes[i + 2] == b'+'
-                && bytes[i + 3] == b'1'
-                && bytes[i + 4] == b'}'
-                && i > start
-                && bytes[i - 1] == b'_'
-            {
-                i += 5; // include {*+1}
-            }
             tokens.push(source[start..i].to_string());
             continue;
         }
@@ -302,30 +284,18 @@ fn parse_fn(s: &mut Stream) -> Function {
         }
         let pname = s.advance();
         s.expect(":");
-        // List type: name: (element_type, count)
-        if s.peek() == Some("(") {
-            s.advance(); // consume (
-            let ptype = parse_type(s);
-            s.expect(",");
-            let count_tok = s.advance();
-            let count = if count_tok.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                Dim::Concrete(count_tok.parse::<i64>().unwrap())
-            } else {
-                Dim::Named(count_tok)
-            };
-            s.expect(")");
+        if s.peek() == Some("*") {
+            s.advance();
             params.push(Param {
                 name: pname,
-                ty: ptype,
-                count: Some(count),
+                ty: TensorType {
+                    dtype: "*".to_string(),
+                    shape: vec![],
+                },
             });
         } else {
             let ptype = parse_type(s);
-            params.push(Param {
-                name: pname,
-                ty: ptype,
-                count: None,
-            });
+            params.push(Param { name: pname, ty: ptype });
         }
     }
     s.expect(")");
@@ -340,11 +310,7 @@ fn parse_fn(s: &mut Stream) -> Function {
         let rname = s.advance();
         s.expect(":");
         let rtype = parse_type(s);
-        returns.push(Param {
-            name: rname,
-            ty: rtype,
-            count: None,
-        });
+        returns.push(Param { name: rname, ty: rtype });
     }
     s.expect(")");
 
@@ -517,6 +483,7 @@ fn build_op_kind(
         },
         "loop" => OpKind::Loop {
             target: function.unwrap_or_default(),
+            count: None,
         },
         _ => panic!("Unknown op: {op:?}"),
     }
@@ -661,16 +628,14 @@ main(pos: f32[N], tokens: int32[N]) -> (logits: bf16[N, param.vocab]) {
 
     const LOOP: &str = r#"
 transformer(
-  act_0  : bf16[N, param.hidden],
-  cos    : bf16[N, param.rope_dim],
-  sin    : bf16[N, param.rope_dim],
-  pos    : f32[N],
-  w_norm : bf16[param.hidden],
-  w_ln1  : (bf16[param.hidden], param.layers),
-  wq     : (bf16[qd, param.hidden], param.layers)
+  x     : bf16[N, param.hidden],
+  cos   : bf16[N, param.rope_dim],
+  sin   : bf16[N, param.rope_dim],
+  pos   : f32[N],
+  w     : *
 ) -> (out: bf16[N, param.hidden]) {
-  act_{*+1}: bf16[N, param.hidden] = loop[layer](act_*, cos, sin, pos, w_ln1, wq)
-  out: bf16[N, param.hidden] = call[rmsnorm](act_{*+1}, w_norm)
+  x  : bf16[N, param.hidden] = loop[layer](x, cos, sin, pos, w.layer)
+  out: bf16[N, param.hidden] = call[rmsnorm](x, w.norm)
 }
 "#;
 
@@ -680,28 +645,26 @@ transformer(
         let f = &m.functions["transformer"];
         assert_eq!(f.ops.len(), 2);
         match &f.ops[0].kind {
-            OpKind::Loop { target } => {
+            OpKind::Loop { target, count } => {
                 assert_eq!(target, "layer");
+                assert_eq!(*count, None);
             }
             other => panic!("Expected Loop, got {other:?}"),
         }
-        // Check _* and _{*+1} identifiers parsed correctly
-        assert_eq!(f.ops[0].outputs, vec!["act_{*+1}"]);
-        assert_eq!(f.ops[0].args[0], Atom::Name("act_*".to_string()));
+        // Output and threaded arg share the same name
+        assert_eq!(f.ops[0].outputs, vec!["x"]);
+        assert_eq!(f.ops[0].args[0], Atom::Name("x".to_string()));
         assert_eq!(f.ops[0].args[1], Atom::Name("cos".to_string()));
-        assert_eq!(f.ops[0].args[4], Atom::Name("w_ln1".to_string()));
+        assert_eq!(f.ops[0].args[4], Atom::Name("w.layer".to_string()));
 
-        // Check list-type params
-        let w_ln1 = &f.params[5];
-        assert_eq!(w_ln1.name, "w_ln1");
-        assert_eq!(w_ln1.count, Some(Dim::Named("param.layers".to_string())));
-        let wq = &f.params[6];
-        assert_eq!(wq.name, "wq");
-        assert_eq!(wq.count, Some(Dim::Named("param.layers".to_string())));
+        // Dict param
+        let w = &f.params[4];
+        assert_eq!(w.name, "w");
+        assert_eq!(w.ty.dtype, "*");
+        assert!(w.ty.shape.is_empty());
 
-        // Scalar params have no count
-        assert_eq!(f.params[0].count, None);
-        assert_eq!(f.params[1].count, None);
+        // Regular params have normal types
+        assert_eq!(f.params[0].ty.dtype, "bf16");
     }
 
     #[test]
@@ -756,7 +719,16 @@ transformer(
         let source = std::fs::read_to_string("../models/qwen3/model.cat").unwrap();
         let m = parse(&source);
         let resolved = crate::resolve::resolve(&m);
-        let flat = crate::flatten::flatten(&resolved, "main");
+        // Set loop count before flattening (normally done by bridge from config)
+        let mut with_count = resolved.clone();
+        for f in with_count.functions.values_mut() {
+            for op in &mut f.ops {
+                if let OpKind::Loop { count, .. } = &mut op.kind {
+                    *count = Some(28); // qwen3/0_6b has 28 layers
+                }
+            }
+        }
+        let flat = crate::flatten::flatten(&with_count, "main");
         let json = serde_json::to_string(&flat).unwrap();
         let m2: crate::ast::Module = serde_json::from_str(&json).unwrap();
         assert_eq!(flat, m2);

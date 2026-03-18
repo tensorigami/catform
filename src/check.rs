@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 
@@ -37,12 +37,22 @@ fn check_function(
     let mut errors = Vec::new();
     let mut env: HashMap<String, Ty> = HashMap::new();
 
+    // Collect dict param names (params with dtype "*")
+    let dict_params: HashSet<&str> = f
+        .params
+        .iter()
+        .filter(|p| p.ty.dtype == "*")
+        .map(|p| p.name.as_str())
+        .collect();
+
     for p in &f.params {
-        env.insert(p.name.clone(), ty_from_tensor_type(&p.ty));
+        if p.ty.dtype != "*" {
+            env.insert(p.name.clone(), ty_from_tensor_type(&p.ty));
+        }
     }
 
     for op in &f.ops {
-        errors.extend(check_op(fn_name, op, &env, functions));
+        errors.extend(check_op(fn_name, op, &env, functions, &dict_params));
         for (out_name, out_type) in op.outputs.iter().zip(op.output_types.iter()) {
             if let Some(t) = out_type {
                 env.insert(out_name.clone(), ty_from_tensor_type(t));
@@ -64,10 +74,22 @@ fn check_function(
     errors
 }
 
-fn is_external(a: &Atom) -> bool {
+fn is_skip(a: &Atom, dict_params: &HashSet<&str>) -> bool {
     match a {
-        Atom::Name(n) => n.contains('.') || n.ends_with("_*"),
-        _ => true,
+        Atom::Name(n) => {
+            // param.X = config reference
+            if n.starts_with("param.") {
+                return true;
+            }
+            // w.X where w is a dict param = dict access
+            if let Some(base) = n.split('.').next() {
+                if dict_params.contains(base) {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => true, // Int, Float always skip
     }
 }
 
@@ -76,37 +98,19 @@ fn check_op(
     op: &Op,
     env: &HashMap<String, Ty>,
     functions: &indexmap::IndexMap<String, Function>,
+    dict_params: &HashSet<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     let out_name = &op.outputs[0];
     let declared = op.output_types[0].as_ref().map(ty_from_tensor_type);
     let loc = format!("{fn_name}/{out_name}");
 
-    // For call/loop ops, find list-typed params in callee (skip scope check for those args)
-    let list_param_indices: std::collections::HashSet<usize> = match &op.kind {
-        OpKind::Call { target } | OpKind::Loop { target } => functions
-            .get(target.as_str())
-            .map(|callee| {
-                callee
-                    .params
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| p.count.is_some())
-                    .map(|(i, _)| i)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => std::collections::HashSet::new(),
-    };
-
     let inputs: Vec<Option<Ty>> = op
         .args
         .iter()
-        .enumerate()
-        .map(|(i, a)| match a {
+        .map(|a| match a {
             Atom::Name(n) if env.contains_key(n) => Some(env[n].clone()),
-            _ if is_external(a) => None,
-            _ if list_param_indices.contains(&i) => None,
+            _ if is_skip(a, dict_params) => None,
             Atom::Name(n) => {
                 errors.push(format!("{loc}: input '{n}' not in scope"));
                 None
@@ -283,19 +287,29 @@ fn rule_call(
     errors: &mut Vec<String>,
 ) -> Option<Ty> {
     let callee = functions.get(target)?;
-    let param_types: Vec<Ty> = callee
+    let param_types: Vec<Option<Ty>> = callee
         .params
         .iter()
-        .map(|p| ty_from_tensor_type(&p.ty))
+        .map(|p| {
+            if p.ty.dtype == "*" {
+                None // dict params have no type to check
+            } else {
+                Some(ty_from_tensor_type(&p.ty))
+            }
+        })
         .collect();
 
     let polymorphic = inputs
         .iter()
         .zip(param_types.iter())
-        .any(|(inp, pt)| inp.as_ref().is_some_and(|i| i.shape.len() > pt.shape.len()));
+        .any(|(inp, pt)| {
+            inp.as_ref()
+                .zip(pt.as_ref())
+                .is_some_and(|(i, p)| i.shape.len() > p.shape.len())
+        });
 
     for (i, (inp, pt)) in inputs.iter().zip(param_types.iter()).enumerate() {
-        if let Some(inp) = inp {
+        if let (Some(inp), Some(pt)) = (inp, pt) {
             let err = if polymorphic {
                 types_match_polymorphic(inp, pt)
             } else {

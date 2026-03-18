@@ -99,13 +99,16 @@ fn scope_ops(
         .collect()
 }
 
-fn resolve_weight(name: &str, scope: &str, prefix: &str, target: &str) -> String {
-    let placeholder = format!("{scope}{target}.");
-    if name.starts_with(&placeholder) {
-        format!("{prefix}.{}", &name[placeholder.len()..])
-    } else {
-        name.to_string()
-    }
+/// Check if a name has _* suffix
+fn has_star(name: &str) -> bool {
+    name.ends_with("_*")
+}
+
+/// Extract base name: "act_*" → "act", "act_{*+1}" → "act", "cos" → "cos"
+fn star_base(name: &str) -> &str {
+    name.strip_suffix("_{*+1}")
+        .or_else(|| name.strip_suffix("_*"))
+        .unwrap_or(name)
 }
 
 // ── Expansion ───────────────────────────────────────────────────────
@@ -119,17 +122,60 @@ fn expand(
     let mut ops = Vec::new();
     let mut resolved = HashSet::new();
 
+    // Scope: names bound in this function (params + previous op outputs)
+    let mut scope: HashSet<String> = f.params.iter().map(|p| p.name.clone()).collect();
+
+    // Renames from loop expansion: "act_{*+1}" → "act"
+    let mut loop_renames: HashMap<String, String> = HashMap::new();
+
     for step in &f.ops {
-        if is_primitive(step) {
-            ops.push(step.clone());
+        // Apply loop renames to this op's args
+        let step = if loop_renames.is_empty() {
+            step.clone()
+        } else {
+            let new_args = step
+                .args
+                .iter()
+                .map(|a| {
+                    if let Atom::Name(n) = a {
+                        if let Some(renamed) = loop_renames.get(n) {
+                            Atom::Name(renamed.clone())
+                        } else {
+                            a.clone()
+                        }
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect();
+            Op {
+                args: new_args,
+                ..step.clone()
+            }
+        };
+
+        if is_primitive(&step) {
+            for o in &step.outputs {
+                scope.insert(o.clone());
+            }
+            ops.push(step);
         } else if let OpKind::Call { .. } = &step.kind {
-            let (call_ops, call_resolved) = inline_call(functions, globals, step, &step.outputs[0]);
+            let (call_ops, call_resolved) =
+                inline_call(functions, globals, &step, &step.outputs[0]);
+            for o in &step.outputs {
+                scope.insert(o.clone());
+            }
             ops.extend(call_ops);
             resolved.extend(call_resolved);
         } else if let OpKind::Loop { .. } = &step.kind {
-            let (loop_ops, loop_resolved) = inline_loop(functions, globals, step);
+            let (loop_ops, loop_resolved, renames) =
+                inline_loop(functions, globals, &step, &f.params);
             ops.extend(loop_ops);
             resolved.extend(loop_resolved);
+            for (_, v) in &renames {
+                scope.insert(v.clone());
+            }
+            loop_renames.extend(renames);
         }
     }
     (ops, resolved)
@@ -176,94 +222,109 @@ fn inline_loop(
     functions: &IndexMap<String, Function>,
     globals: &HashSet<String>,
     loop_op: &Op,
-) -> (Vec<Op>, HashSet<String>) {
-    let (target, over, count) = match &loop_op.kind {
-        OpKind::Loop {
-            target,
-            over,
-            count,
-        } => {
-            let c = match count {
-                Atom::Int(n) => *n as usize,
-                Atom::Float(f) => *f as usize,
-                _ => panic!("Loop count must be resolved to an integer"),
-            };
-            (target.as_str(), over.as_str(), c)
-        }
+    enclosing_params: &[Param],
+) -> (Vec<Op>, HashSet<String>, HashMap<String, String>) {
+    let target = match &loop_op.kind {
+        OpKind::Loop { target } => target.as_str(),
         _ => unreachable!(),
     };
-    let callee = &functions[target];
-    let return_names: Vec<&str> = callee.returns.iter().map(|r| r.name.as_str()).collect();
-    let n_iterated = return_names.len();
 
-    let loop_args: Vec<Atom> = loop_op.args.clone();
-    let mut iterated: Vec<Atom> = loop_args[..n_iterated].to_vec();
-    let static_args: Vec<Atom> = loop_args[n_iterated..].to_vec();
+    // Parse output: "act_{*+1}" → base "act"
+    let output_name = &loop_op.outputs[0];
+    let output_base = star_base(output_name);
+
+    // Build param lookup: name → count dim (for list params)
+    let param_counts: HashMap<&str, &Dim> = enclosing_params
+        .iter()
+        .filter_map(|p| p.count.as_ref().map(|c| (p.name.as_str(), c)))
+        .collect();
+
+    // Classify args and determine count from list param types
+    let mut threaded_idx: Option<usize> = None;
+    let mut list_indices: Vec<usize> = Vec::new();
+    let mut count: Option<usize> = None;
+
+    for (i, arg) in loop_op.args.iter().enumerate() {
+        if let Atom::Name(n) = arg {
+            if has_star(n) && star_base(n) == output_base {
+                threaded_idx = Some(i);
+            } else if let Some(dim) = param_counts.get(n.as_str()) {
+                list_indices.push(i);
+                match dim {
+                    Dim::Concrete(c) => {
+                        let c = *c as usize;
+                        if let Some(prev) = count {
+                            assert_eq!(prev, c, "All list args must have the same count");
+                        }
+                        count = Some(c);
+                    }
+                    Dim::Named(n) => {
+                        panic!("List count '{n}' must be resolved before flattening")
+                    }
+                }
+            }
+            // else: scalar (no list type annotation)
+        }
+    }
+
+    let threaded_idx = threaded_idx.expect("Loop must have a threaded _* arg matching output base");
+    let count = count.expect("Loop must have at least one list arg");
 
     let mut ops = Vec::new();
     let mut resolved = HashSet::new();
 
-    for i in 0..count {
-        let scope = format!("loop{i}.");
-        let prefix = format!("{over}.{i}");
+    // Track the current threaded value name
+    let mut threaded_name = format!("{output_base}_0");
 
-        let iter_outputs: Vec<String> = (0..n_iterated)
-            .map(|j| format!("{}_{i}", loop_op.outputs[j]))
-            .collect();
+    for i in 0..count {
+        let next_threaded = format!("{output_base}_{}", i + 1);
+
+        // Build synthetic call args
+        let mut call_args: Vec<Atom> = Vec::new();
+        for (j, arg) in loop_op.args.iter().enumerate() {
+            if j == threaded_idx {
+                // Threaded: use current iteration's name
+                call_args.push(Atom::Name(threaded_name.clone()));
+            } else if list_indices.contains(&j) {
+                // List: index with iteration number
+                if let Atom::Name(n) = arg {
+                    let indexed = format!("{n}_{i}");
+                    resolved.insert(indexed.clone());
+                    call_args.push(Atom::Name(indexed));
+                } else {
+                    call_args.push(arg.clone());
+                }
+            } else {
+                // Scalar: pass through unchanged
+                call_args.push(arg.clone());
+            }
+        }
 
         let synth_call = Op {
             kind: OpKind::Call {
                 target: target.to_string(),
             },
-            outputs: iter_outputs.clone(),
+            outputs: vec![next_threaded.clone()],
             output_types: loop_op.output_types.clone(),
-            args: [iterated.clone(), static_args.clone()].concat(),
+            args: call_args,
             comments: Vec::new(),
         };
+
         let loop_scope = format!("loop{i}");
         let (inlined, _) = inline_call(functions, globals, &synth_call, &loop_scope);
+        ops.extend(inlined);
 
-        for op in inlined {
-            let new_args: Vec<Atom> = op
-                .args
-                .iter()
-                .map(|a| {
-                    if let Atom::Name(n) = a {
-                        let rn = resolve_weight(n, &scope, &prefix, target);
-                        if rn != *n {
-                            resolved.insert(rn.clone());
-                        }
-                        Atom::Name(rn)
-                    } else {
-                        a.clone()
-                    }
-                })
-                .collect();
-            let new_outputs: Vec<String> = op
-                .outputs
-                .iter()
-                .map(|o| resolve_weight(o, &scope, &prefix, target))
-                .collect();
-            ops.push(Op {
-                kind: op.kind,
-                outputs: new_outputs,
-                output_types: op.output_types,
-                args: new_args,
-                comments: op.comments,
-            });
-        }
-        iterated = iter_outputs.into_iter().map(Atom::Name).collect();
+        threaded_name = next_threaded;
     }
 
-    // Final iteration: rename outputs to loop's declared names
+    // Final rename: act_{count} → base name "act"
+    let final_name = format!("{output_base}_{count}");
+    let base_name = output_base.to_string();
+
     if !ops.is_empty() {
         let mut renames = HashMap::new();
-        for j in 0..n_iterated {
-            renames.insert(
-                format!("{}_{}", loop_op.outputs[j], count - 1),
-                loop_op.outputs[j].clone(),
-            );
-        }
+        renames.insert(final_name.clone(), base_name.clone());
+
         ops = ops
             .into_iter()
             .map(|op| {
@@ -303,5 +364,9 @@ fn inline_loop(
             .collect();
     }
 
-    (ops, resolved)
+    // Return renames so expand() can substitute in subsequent ops
+    let mut output_renames = HashMap::new();
+    output_renames.insert(output_name.clone(), base_name);
+
+    (ops, resolved, output_renames)
 }

@@ -66,7 +66,7 @@ fn check_function(
 
 fn is_external(a: &Atom) -> bool {
     match a {
-        Atom::Name(n) => n.contains('.'),
+        Atom::Name(n) => n.contains('.') || n.ends_with("_*"),
         _ => true,
     }
 }
@@ -82,12 +82,31 @@ fn check_op(
     let declared = op.output_types[0].as_ref().map(ty_from_tensor_type);
     let loc = format!("{fn_name}/{out_name}");
 
+    // For call/loop ops, find list-typed params in callee (skip scope check for those args)
+    let list_param_indices: std::collections::HashSet<usize> = match &op.kind {
+        OpKind::Call { target } | OpKind::Loop { target } => functions
+            .get(target.as_str())
+            .map(|callee| {
+                callee
+                    .params
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.count.is_some())
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => std::collections::HashSet::new(),
+    };
+
     let inputs: Vec<Option<Ty>> = op
         .args
         .iter()
-        .map(|a| match a {
+        .enumerate()
+        .map(|(i, a)| match a {
             Atom::Name(n) if env.contains_key(n) => Some(env[n].clone()),
             _ if is_external(a) => None,
+            _ if list_param_indices.contains(&i) => None,
             Atom::Name(n) => {
                 errors.push(format!("{loc}: input '{n}' not in scope"));
                 None

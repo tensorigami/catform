@@ -3,9 +3,15 @@ use crate::ast::*;
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn needs_quoting(s: &str) -> bool {
-    s.is_empty()
-        || !s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[0] != b'_'
-        || s.bytes()
+    // Strip loop subscript suffixes before checking
+    let base = s
+        .strip_suffix("_{*+1}")
+        .or_else(|| s.strip_suffix("_*"))
+        .unwrap_or(s);
+    base.is_empty()
+        || (!base.as_bytes()[0].is_ascii_alphabetic() && base.as_bytes()[0] != b'_')
+        || base
+            .bytes()
             .any(|b| !b.is_ascii_alphanumeric() && b != b'_' && b != b'.')
 }
 
@@ -113,28 +119,33 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("call[{target}]({})", paren.join(", "))
         }
-        OpKind::Loop {
-            target,
-            over,
-            count,
-        } => {
-            let count_str = fmt_atom(count);
+        OpKind::Loop { target, .. } => {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!(
-                "loop[{target}, over={over}, count={count_str}]({})",
-                paren.join(", ")
-            )
+            format!("loop[{target}]({})", paren.join(", "))
         }
     }
 }
 
 // ── Signature ───────────────────────────────────────────────────────
 
+fn fmt_param_type(p: &Param) -> String {
+    match &p.count {
+        Some(dim) => {
+            let dim_str = match dim {
+                Dim::Concrete(n) => n.to_string(),
+                Dim::Named(s) => s.clone(),
+            };
+            format!("({}, {dim_str})", fmt_type(&p.ty))
+        }
+        None => fmt_type(&p.ty),
+    }
+}
+
 fn fmt_signature(f: &Function, width: usize) -> Vec<String> {
     let param_strs: Vec<String> = f
         .params
         .iter()
-        .map(|p| format!("{}: {}", p.name, fmt_type(&p.ty)))
+        .map(|p| format!("{}: {}", p.name, fmt_param_type(p)))
         .collect();
     let ret_strs: Vec<String> = f
         .returns
@@ -154,7 +165,7 @@ fn fmt_signature(f: &Function, width: usize) -> Vec<String> {
     for (i, p) in f.params.iter().enumerate() {
         let pad = " ".repeat(max_name - p.name.len());
         let comma = if i < f.params.len() - 1 { "," } else { "" };
-        lines.push(format!("  {}{pad}: {}{comma}", p.name, fmt_type(&p.ty)));
+        lines.push(format!("  {}{pad}: {}{comma}", p.name, fmt_param_type(p)));
     }
     lines.push(format!(") -> {ret_part} {{"));
     lines

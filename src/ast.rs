@@ -127,8 +127,6 @@ pub enum OpKind {
     },
     Loop {
         target: String,
-        over: String,
-        count: Atom,
     },
 }
 
@@ -196,15 +194,9 @@ impl Serialize for Op {
                 map.serialize_entry("kind", "call")?;
                 map.serialize_entry("target", target)?;
             }
-            OpKind::Loop {
-                target,
-                over,
-                count,
-            } => {
+            OpKind::Loop { target } => {
                 map.serialize_entry("kind", "loop")?;
                 map.serialize_entry("target", target)?;
-                map.serialize_entry("over", over)?;
-                map.serialize_entry("count", count)?;
             }
         }
 
@@ -232,10 +224,6 @@ struct OpRaw {
     value: Option<LiteralValue>,
     #[serde(default)]
     target: String,
-    #[serde(default)]
-    over: String,
-    #[serde(default)]
-    count: Option<Atom>,
     outputs: Vec<String>,
     output_types: Vec<Option<TensorType>>,
     args: Vec<Atom>,
@@ -274,8 +262,6 @@ impl<'de> Deserialize<'de> for Op {
             "call" => OpKind::Call { target: r.target },
             "loop" => OpKind::Loop {
                 target: r.target,
-                over: r.over,
-                count: r.count.unwrap_or(Atom::Int(0)),
             },
             other => {
                 return Err(serde::de::Error::custom(format!(
@@ -299,6 +285,8 @@ impl<'de> Deserialize<'de> for Op {
 pub struct Param {
     pub name: String,
     pub ty: TensorType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<Dim>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

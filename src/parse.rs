@@ -83,6 +83,24 @@ fn tokenize(source: &str) -> Vec<String> {
             {
                 i += 1;
             }
+            // Check for _* suffix (e.g., act_*)
+            if i < bytes.len()
+                && bytes[i] == b'*'
+                && i > start
+                && bytes[i - 1] == b'_'
+            {
+                i += 1; // include *
+            } else if i + 4 < bytes.len()
+                && bytes[i] == b'{'
+                && bytes[i + 1] == b'*'
+                && bytes[i + 2] == b'+'
+                && bytes[i + 3] == b'1'
+                && bytes[i + 4] == b'}'
+                && i > start
+                && bytes[i - 1] == b'_'
+            {
+                i += 5; // include {*+1}
+            }
             tokens.push(source[start..i].to_string());
             continue;
         }
@@ -284,11 +302,31 @@ fn parse_fn(s: &mut Stream) -> Function {
         }
         let pname = s.advance();
         s.expect(":");
-        let ptype = parse_type(s);
-        params.push(Param {
-            name: pname,
-            ty: ptype,
-        });
+        // List type: name: (element_type, count)
+        if s.peek() == Some("(") {
+            s.advance(); // consume (
+            let ptype = parse_type(s);
+            s.expect(",");
+            let count_tok = s.advance();
+            let count = if count_tok.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                Dim::Concrete(count_tok.parse::<i64>().unwrap())
+            } else {
+                Dim::Named(count_tok)
+            };
+            s.expect(")");
+            params.push(Param {
+                name: pname,
+                ty: ptype,
+                count: Some(count),
+            });
+        } else {
+            let ptype = parse_type(s);
+            params.push(Param {
+                name: pname,
+                ty: ptype,
+                count: None,
+            });
+        }
     }
     s.expect(")");
 
@@ -305,6 +343,7 @@ fn parse_fn(s: &mut Stream) -> Function {
         returns.push(Param {
             name: rname,
             ty: rtype,
+            count: None,
         });
     }
     s.expect(")");
@@ -442,7 +481,7 @@ fn build_op_kind(
     op: &str,
     pattern: Option<String>,
     function: Option<String>,
-    bracket_kwargs: &IndexMap<String, Atom>,
+    _bracket_kwargs: &IndexMap<String, Atom>,
     axes: IndexMap<String, i64>,
 ) -> OpKind {
     match op {
@@ -476,20 +515,9 @@ fn build_op_kind(
         "call" => OpKind::Call {
             target: function.unwrap_or_default(),
         },
-        "loop" => {
-            let over = match bracket_kwargs.get("over") {
-                Some(Atom::Name(s)) => s.clone(),
-                Some(Atom::Int(n)) => n.to_string(),
-                Some(Atom::Float(f)) => f.to_string(),
-                None => String::new(),
-            };
-            let count = bracket_kwargs.get("count").cloned().unwrap_or(Atom::Int(0));
-            OpKind::Loop {
-                target: function.unwrap_or_default(),
-                over,
-                count,
-            }
-        }
+        "loop" => OpKind::Loop {
+            target: function.unwrap_or_default(),
+        },
         _ => panic!("Unknown op: {op:?}"),
     }
 }
@@ -633,14 +661,16 @@ main(pos: f32[N], tokens: int32[N]) -> (logits: bf16[N, param.vocab]) {
 
     const LOOP: &str = r#"
 transformer(
-  x     : bf16[N, param.hidden],
-  cos   : bf16[N, param.rope_dim],
-  sin   : bf16[N, param.rope_dim],
-  pos   : f32[N],
-  w_norm: bf16[param.hidden]
+  act_0  : bf16[N, param.hidden],
+  cos    : bf16[N, param.rope_dim],
+  sin    : bf16[N, param.rope_dim],
+  pos    : f32[N],
+  w_norm : bf16[param.hidden],
+  w_ln1  : (bf16[param.hidden], param.layers),
+  wq     : (bf16[qd, param.hidden], param.layers)
 ) -> (out: bf16[N, param.hidden]) {
-  act: bf16[N, param.hidden] = loop[layer, over=model.layers, count=param.layers](x, cos, sin, pos)
-  out: bf16[N, param.hidden] = call[rmsnorm](act, w_norm)
+  act_{*+1}: bf16[N, param.hidden] = loop[layer](act_*, cos, sin, pos, w_ln1, wq)
+  out: bf16[N, param.hidden] = call[rmsnorm](act_{*+1}, w_norm)
 }
 "#;
 
@@ -648,13 +678,30 @@ transformer(
     fn parse_loop() {
         let m = parse(LOOP);
         let f = &m.functions["transformer"];
+        assert_eq!(f.ops.len(), 2);
         match &f.ops[0].kind {
-            OpKind::Loop { target, over, .. } => {
+            OpKind::Loop { target } => {
                 assert_eq!(target, "layer");
-                assert_eq!(over, "model.layers");
             }
             other => panic!("Expected Loop, got {other:?}"),
         }
+        // Check _* and _{*+1} identifiers parsed correctly
+        assert_eq!(f.ops[0].outputs, vec!["act_{*+1}"]);
+        assert_eq!(f.ops[0].args[0], Atom::Name("act_*".to_string()));
+        assert_eq!(f.ops[0].args[1], Atom::Name("cos".to_string()));
+        assert_eq!(f.ops[0].args[4], Atom::Name("w_ln1".to_string()));
+
+        // Check list-type params
+        let w_ln1 = &f.params[5];
+        assert_eq!(w_ln1.name, "w_ln1");
+        assert_eq!(w_ln1.count, Some(Dim::Named("param.layers".to_string())));
+        let wq = &f.params[6];
+        assert_eq!(wq.name, "wq");
+        assert_eq!(wq.count, Some(Dim::Named("param.layers".to_string())));
+
+        // Scalar params have no count
+        assert_eq!(f.params[0].count, None);
+        assert_eq!(f.params[1].count, None);
     }
 
     #[test]

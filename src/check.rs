@@ -1,15 +1,33 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use serde::Serialize;
 
 use crate::ast::*;
 
+// ── Constraints ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Constraints {
+    /// Config param names referenced anywhere in the module (param.X)
+    pub params: BTreeSet<String>,
+    /// Per-function weight constraints: fn_name → { dict_path → expected type }
+    pub weights: BTreeMap<String, BTreeMap<String, TensorType>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CheckResult {
+    pub errors: Vec<String>,
+    pub constraints: Constraints,
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
-pub fn check(m: &Module) -> Vec<String> {
-    let mut errors = Vec::new();
+pub fn check(m: &Module) -> CheckResult {
+    let mut result = CheckResult::default();
     for (fn_name, f) in &m.functions {
-        errors.extend(check_function(fn_name, f, &m.functions));
+        check_function(fn_name, f, &m.functions, &mut result);
     }
-    errors
+    result
 }
 
 // ── Type representation ─────────────────────────────────────────────
@@ -27,17 +45,25 @@ fn ty_from_tensor_type(t: &TensorType) -> Ty {
     }
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/// Is this name an access into a dict (*) parameter? e.g. "weights.ln1" when "weights" is *.
+fn is_dict_access(name: &str, dict_params: &HashSet<&str>) -> bool {
+    name.split('.')
+        .next()
+        .is_some_and(|base| dict_params.contains(base))
+}
+
 // ── Function checking ───────────────────────────────────────────────
 
 fn check_function(
     fn_name: &str,
     f: &Function,
     functions: &indexmap::IndexMap<String, Function>,
-) -> Vec<String> {
-    let mut errors = Vec::new();
+    result: &mut CheckResult,
+) {
     let mut env: HashMap<String, Ty> = HashMap::new();
 
-    // Collect dict param names (params with dtype "*")
     let dict_params: HashSet<&str> = f
         .params
         .iter()
@@ -45,17 +71,25 @@ fn check_function(
         .map(|p| p.name.as_str())
         .collect();
 
+    // Collect param.X references from parameter type annotations
     for p in &f.params {
         if p.ty.dtype != "*" {
             env.insert(p.name.clone(), ty_from_tensor_type(&p.ty));
+            collect_params_from_type(&p.ty, &mut result.constraints.params);
         }
     }
 
+    // Collect param.X references from return type annotations
+    for r in &f.returns {
+        collect_params_from_type(&r.ty, &mut result.constraints.params);
+    }
+
     for op in &f.ops {
-        errors.extend(check_op(fn_name, op, &env, functions, &dict_params));
+        check_op(fn_name, op, &env, functions, &dict_params, result);
         for (out_name, out_type) in op.outputs.iter().zip(op.output_types.iter()) {
             if let Some(t) = out_type {
                 env.insert(out_name.clone(), ty_from_tensor_type(t));
+                collect_params_from_type(t, &mut result.constraints.params);
             }
         }
     }
@@ -64,32 +98,26 @@ fn check_function(
         let rtype = ty_from_tensor_type(&ret.ty);
         if let Some(actual) = env.get(&ret.name) {
             if let Some(err) = types_match(actual, &rtype) {
-                errors.push(format!("{fn_name}: return '{}' {err}", ret.name));
+                result
+                    .errors
+                    .push(format!("{fn_name}: return '{}' {err}", ret.name));
             }
         } else {
-            errors.push(format!("{fn_name}: return '{}' not found in env", ret.name));
+            result
+                .errors
+                .push(format!("{fn_name}: return '{}' not found in env", ret.name));
         }
     }
-
-    errors
 }
 
-fn is_skip(a: &Atom, dict_params: &HashSet<&str>) -> bool {
-    match a {
-        Atom::Name(n) => {
-            // param.X = config reference
-            if n.starts_with("param.") {
-                return true;
-            }
-            // w.X where w is a dict param = dict access
-            if let Some(base) = n.split('.').next() {
-                if dict_params.contains(base) {
-                    return true;
-                }
-            }
-            false
+/// Collect param.X dimension names from a tensor type.
+fn collect_params_from_type(t: &TensorType, params: &mut BTreeSet<String>) {
+    for d in &t.shape {
+        if let Dim::Named(n) = d
+            && n.starts_with("param.")
+        {
+            params.insert(n.clone());
         }
-        _ => true, // Int, Float always skip
     }
 }
 
@@ -99,41 +127,57 @@ fn check_op(
     env: &HashMap<String, Ty>,
     functions: &indexmap::IndexMap<String, Function>,
     dict_params: &HashSet<&str>,
-) -> Vec<String> {
-    let mut errors = Vec::new();
+    result: &mut CheckResult,
+) {
     let out_name = &op.outputs[0];
     let declared = op.output_types[0].as_ref().map(ty_from_tensor_type);
     let loc = format!("{fn_name}/{out_name}");
+
+    let mut local_errors = Vec::new();
 
     let inputs: Vec<Option<Ty>> = op
         .args
         .iter()
         .map(|a| match a {
             Atom::Name(n) if env.contains_key(n) => Some(env[n].clone()),
-            _ if is_skip(a, dict_params) => None,
-            Atom::Name(n) => {
-                errors.push(format!("{loc}: input '{n}' not in scope"));
+            Atom::Name(n) if n.starts_with("param.") => {
+                result.constraints.params.insert(n.clone());
                 None
             }
-            _ => None,
+            Atom::Name(n) if is_dict_access(n, dict_params) => None,
+            Atom::Name(n) => {
+                local_errors.push(format!("{loc}: input '{n}' not in scope"));
+                None
+            }
+            _ => None, // Int, Float literals
         })
         .collect();
 
+    result.errors.extend(local_errors);
+
     let declared = match declared {
         Some(d) => d,
-        None => return errors,
+        None => return,
     };
 
-    let expected = op_rule(op, &inputs, &declared, functions, &loc, &mut errors);
+    let expected = op_rule(
+        op,
+        &inputs,
+        &declared,
+        functions,
+        &loc,
+        &mut result.errors,
+        &mut result.constraints,
+        fn_name,
+        dict_params,
+    );
     if let Some(expected) = expected
         && let Some(err) = types_match(&expected, &declared)
     {
-        errors.push(format!(
+        result.errors.push(format!(
             "{loc}: declared {declared:?}, expected {expected:?} — {err}"
         ));
     }
-
-    errors
 }
 
 // ── Op rules ────────────────────────────────────────────────────────
@@ -148,6 +192,9 @@ fn op_rule(
     functions: &indexmap::IndexMap<String, Function>,
     loc: &str,
     errors: &mut Vec<String>,
+    constraints: &mut Constraints,
+    fn_name: &str,
+    dict_params: &HashSet<&str>,
 ) -> Option<Ty> {
     match &op.kind {
         OpKind::Map { function } => rule_map(inputs, declared, function),
@@ -157,9 +204,11 @@ fn op_rule(
         OpKind::Contract { .. } => rule_contract(inputs, declared),
         OpKind::Gather { .. } => rule_gather(inputs, declared, loc, errors),
         OpKind::Scatter { .. } => rule_scatter(inputs, declared),
-        OpKind::Call { target } => rule_call(target, op, inputs, functions, declared, loc, errors),
+        OpKind::Call { target } => {
+            rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
+        }
         OpKind::Loop { target, .. } => {
-            rule_call(target, op, inputs, functions, declared, loc, errors)
+            rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
         OpKind::Literal { .. } | OpKind::Random { .. } => Some(declared.clone()),
     }
@@ -279,12 +328,15 @@ fn rule_scatter(inputs: &[Option<Ty>], declared: &Ty) -> Option<Ty> {
 
 fn rule_call(
     target: &str,
-    _op: &Op,
+    op: &Op,
     inputs: &[Option<Ty>],
     functions: &indexmap::IndexMap<String, Function>,
     declared: &Ty,
     loc: &str,
     errors: &mut Vec<String>,
+    constraints: &mut Constraints,
+    fn_name: &str,
+    dict_params: &HashSet<&str>,
 ) -> Option<Ty> {
     let callee = functions.get(target)?;
     let param_types: Vec<Option<Ty>> = callee
@@ -292,7 +344,7 @@ fn rule_call(
         .iter()
         .map(|p| {
             if p.ty.dtype == "*" {
-                None // dict params have no type to check
+                None
             } else {
                 Some(ty_from_tensor_type(&p.ty))
             }
@@ -320,6 +372,31 @@ fn rule_call(
                     "{loc}: arg {i} '{}' — {err}",
                     callee.params[i].name
                 ));
+            }
+        }
+    }
+
+    // Collect weight constraints: dict-accessed args passed to typed callee params
+    for (i, param) in callee.params.iter().enumerate() {
+        if param.ty.dtype == "*" {
+            continue;
+        }
+        if let Some(Atom::Name(arg_name)) = op.args.get(i) {
+            if is_dict_access(arg_name, dict_params) {
+                let fn_weights = constraints
+                    .weights
+                    .entry(fn_name.to_string())
+                    .or_default();
+                if let Some(existing) = fn_weights.get(arg_name) {
+                    if existing != &param.ty {
+                        errors.push(format!(
+                            "{loc}: weight '{}' used with conflicting types: {:?} vs {:?}",
+                            arg_name, existing, param.ty
+                        ));
+                    }
+                } else {
+                    fn_weights.insert(arg_name.clone(), param.ty.clone());
+                }
             }
         }
     }

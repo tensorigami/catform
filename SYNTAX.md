@@ -83,14 +83,16 @@ Note: `param.X` inside shapes keeps its own coloring (§5).
 |--------|-------------|
 | `meta` | `@type`     |
 
-### §5. `param.` prefix
+### §5. Name prefix
 
-The word `param` and the dot in a `param.X` reference.
-The value after the dot gets secondary coloring.
+The first segment of any dotted name (`prefix.path`).
+All dotted names are opaque to catform — `param.X`, `weights.X`, `foo.bar.baz`
+get identical treatment: prefix → §5 color, path segments → secondary.
 
 ```
-param.hidden   param.rms_norm_eps   param.layers
-^^^^^.                                          ← this part
+param.hidden   weights.attn.q   weights.layer
+^^^^^          ^^^^^^^          ^^^^^^^         ← prefix (§5)
+      ^^^^^^          ^^^^  ^         ^^^^^     ← path (secondary)
 ```
 
 | hljs   | tree-sitter  |
@@ -137,8 +139,7 @@ Highlighted but don't need a distinct color group.
 |------------------|-----------|--------------------|-----------------------------------:|
 | Comment          | `comment` | `@comment`         | `// ...`                           |
 | Number           | `number`  | `@number`          | `1`, `2`, `0.5`, `-inf`           |
-| `param.X` value  | `literal` | `@constant`        | the `hidden` in `param.hidden`     |
-| Weight ref       | `literal` | `@variable.member` | `model.X`, `layer.X`              |
+| Name path        | `literal` | `@constant`        | segments after prefix dot          |
 | Literal value    | `number`  | `@number`          | arg of `literal()`: `[[1,0],[0,1]]`|
 | Spec keyword     | `attr`    | `@property`        | `over=`, `count=`                  |
 | Punctuation      | various   | various            | `()[]{},:=.`                       |

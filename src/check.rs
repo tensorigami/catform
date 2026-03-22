@@ -414,7 +414,7 @@ fn dims_match(a: &Dim, b: &Dim) -> bool {
     match (a, b) {
         (Dim::Concrete(x), Dim::Concrete(y)) => x == y,
         (Dim::Named(x), Dim::Named(y)) => {
-            if is_free(x) || is_free(y) {
+            if x == "..." || y == "..." || is_free(x) || is_free(y) {
                 true
             } else {
                 x == y
@@ -424,10 +424,40 @@ fn dims_match(a: &Dim, b: &Dim) -> bool {
     }
 }
 
+/// Split a shape into (has_ellipsis, fixed_suffix).
+/// `f32[..., N, M]` → (true, [N, M]).  `f32[N, M]` → (false, [N, M]).
+fn ellipsis_split(shape: &[Dim]) -> (bool, &[Dim]) {
+    match shape.first() {
+        Some(Dim::Named(n)) if n == "..." => (true, &shape[1..]),
+        _ => (false, shape),
+    }
+}
+
 fn types_match(actual: &Ty, expected: &Ty) -> Option<String> {
     if actual.dtype != expected.dtype {
         return Some(format!("dtype: {} vs {}", actual.dtype, expected.dtype));
     }
+
+    let (a_ell, a_fixed) = ellipsis_split(&actual.shape);
+    let (e_ell, e_fixed) = ellipsis_split(&expected.shape);
+
+    if a_ell || e_ell {
+        // Ellipsis: match fixed suffixes only
+        let (short, long) = if a_fixed.len() <= e_fixed.len() {
+            (a_fixed, e_fixed)
+        } else {
+            (e_fixed, a_fixed)
+        };
+        let offset = long.len() - short.len();
+        for (i, (s, l)) in short.iter().zip(long[offset..].iter()).enumerate() {
+            if !dims_match(s, l) {
+                return Some(format!("dim {i}: {s:?} vs {l:?}"));
+            }
+        }
+        return None;
+    }
+
+    // No ellipsis: exact rank + dim match
     if actual.shape.len() != expected.shape.len() {
         return Some(format!(
             "rank: {} vs {}",

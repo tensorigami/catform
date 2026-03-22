@@ -47,6 +47,12 @@ fn tokenize(source: &str) -> Vec<String> {
             i += 2;
             continue;
         }
+        // Ellipsis ...
+        if b == b'.' && i + 2 < bytes.len() && bytes[i + 1] == b'.' && bytes[i + 2] == b'.' {
+            tokens.push("...".to_string());
+            i += 3;
+            continue;
+        }
         // Number (possibly negative)
         if b.is_ascii_digit() || (b == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit())
         {

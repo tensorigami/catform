@@ -198,7 +198,13 @@ fn inline_loop(
     loop_op: &Op,
 ) -> (Vec<Op>, HashSet<String>) {
     let (target, count) = match &loop_op.kind {
-        OpKind::Loop { target, count } => (target.as_str(), count.expect("Loop count must be set before flattening")),
+        OpKind::Loop { target, count } => {
+            let n = match count {
+                LoopCount::Concrete(n) => *n,
+                LoopCount::Named(s) => panic!("Loop count '{s}' not resolved before flattening"),
+            };
+            (target.as_str(), n)
+        }
         _ => unreachable!(),
     };
 

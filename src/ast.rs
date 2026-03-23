@@ -88,6 +88,14 @@ impl<'de> Deserialize<'de> for LiteralValue {
     }
 }
 
+// ── Loop count ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoopCount {
+    Concrete(usize),
+    Named(String),
+}
+
 // ── Ops — the sum type ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,7 +135,7 @@ pub enum OpKind {
     },
     Loop {
         target: String,
-        count: Option<usize>,
+        count: LoopCount,
     },
 }
 
@@ -198,8 +206,9 @@ impl Serialize for Op {
             OpKind::Loop { target, count } => {
                 map.serialize_entry("kind", "loop")?;
                 map.serialize_entry("target", target)?;
-                if let Some(c) = count {
-                    map.serialize_entry("count", c)?;
+                match count {
+                    LoopCount::Concrete(n) => map.serialize_entry("count", n)?,
+                    LoopCount::Named(s) => map.serialize_entry("count", s)?,
                 }
             }
         }
@@ -229,7 +238,7 @@ struct OpRaw {
     #[serde(default)]
     target: String,
     #[serde(default)]
-    count: Option<usize>,
+    count: Option<serde_json::Value>,
     outputs: Vec<String>,
     output_types: Vec<Option<TensorType>>,
     args: Vec<Atom>,
@@ -266,10 +275,19 @@ impl<'de> Deserialize<'de> for Op {
                 function: r.function,
             },
             "call" => OpKind::Call { target: r.target },
-            "loop" => OpKind::Loop {
-                target: r.target,
-                count: r.count,
-            },
+            "loop" => {
+                let count = match r.count {
+                    Some(serde_json::Value::Number(n)) => {
+                        LoopCount::Concrete(n.as_u64().unwrap() as usize)
+                    }
+                    Some(serde_json::Value::String(s)) => LoopCount::Named(s),
+                    _ => LoopCount::Named(String::new()),
+                };
+                OpKind::Loop {
+                    target: r.target,
+                    count,
+                }
+            }
             other => {
                 return Err(serde::de::Error::custom(format!(
                     "unknown op kind: {other}"

@@ -207,7 +207,12 @@ fn op_rule(
         OpKind::Call { target } => {
             rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
-        OpKind::Loop { target, .. } => {
+        OpKind::Loop { target, count } => {
+            if let LoopCount::Named(s) = count {
+                if s.starts_with("param.") {
+                    constraints.params.insert(s.clone());
+                }
+            }
             rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
         OpKind::Literal { .. } | OpKind::Random { .. } => Some(declared.clone()),

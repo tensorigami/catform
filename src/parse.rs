@@ -392,14 +392,16 @@ fn parse_fn(s: &mut Stream) -> Function {
 
         // Build specifiers from bracket args
         let mut pattern: Option<String> = None;
-        let mut function: Option<String> = None;
+        let mut functions: Vec<String> = Vec::new();
+        let mut bracket_ints: Vec<i64> = Vec::new();
         for arg in &bracket_args {
-            if let Atom::Name(n) = arg {
-                if n.contains(' ') || n.contains("->") {
+            match arg {
+                Atom::Name(n) if n.contains(' ') || n.contains("->") => {
                     pattern = Some(n.clone());
-                } else {
-                    function = Some(n.clone());
                 }
+                Atom::Name(n) => functions.push(n.clone()),
+                Atom::Int(n) => bracket_ints.push(*n),
+                _ => {}
             }
         }
 
@@ -427,7 +429,7 @@ fn parse_fn(s: &mut Stream) -> Function {
         }
 
         // Build OpKind from op name + specifiers
-        let kind = build_op_kind(&op_name, pattern, function.clone(), &bracket_kwargs, axes);
+        let kind = build_op_kind(&op_name, pattern, &functions, &bracket_ints, &bracket_kwargs, axes);
 
         ops.push(Op {
             kind,
@@ -452,21 +454,21 @@ fn parse_fn(s: &mut Stream) -> Function {
 fn build_op_kind(
     op: &str,
     pattern: Option<String>,
-    function: Option<String>,
+    functions: &[String],
+    bracket_ints: &[i64],
     _bracket_kwargs: &IndexMap<String, Atom>,
     axes: IndexMap<String, i64>,
 ) -> OpKind {
+    let function = functions.first().cloned().unwrap_or_default();
     match op {
         "view" => OpKind::View {
             pattern: pattern.unwrap_or_default(),
             axes,
         },
-        "map" => OpKind::Map {
-            function: function.unwrap_or_default(),
-        },
+        "map" => OpKind::Map { function },
         "fold" => OpKind::Fold {
             pattern: pattern.unwrap_or_default(),
-            function: function.unwrap_or_default(),
+            function,
         },
         "tile" => OpKind::Tile {
             pattern: pattern.unwrap_or_default(),
@@ -481,16 +483,21 @@ fn build_op_kind(
         "contract" => OpKind::Contract {
             pattern: pattern.unwrap_or_default(),
         },
-        "random" => OpKind::Random {
-            function: function.unwrap_or_default(),
-        },
-        "call" => OpKind::Call {
-            target: function.unwrap_or_default(),
-        },
-        "loop" => OpKind::Loop {
-            target: function.unwrap_or_default(),
-            count: None,
-        },
+        "random" => OpKind::Random { function },
+        "call" => OpKind::Call { target: function },
+        "loop" => {
+            let count = if let Some(name) = functions.get(1) {
+                LoopCount::Named(name.clone())
+            } else if let Some(&n) = bracket_ints.first() {
+                LoopCount::Concrete(n as usize)
+            } else {
+                panic!("loop requires explicit count: loop[fn, count]")
+            };
+            OpKind::Loop {
+                target: function,
+                count,
+            }
+        }
         _ => panic!("Unknown op: {op:?}"),
     }
 }
@@ -640,7 +647,7 @@ transformer(
   pos   : f32[N],
   w     : *
 ) -> (out: bf16[N, param.hidden]) {
-  x  : bf16[N, param.hidden] = loop[layer](x, cos, sin, pos, w.layer)
+  x  : bf16[N, param.hidden] = loop[layer, param.layers](x, cos, sin, pos, w.layer)
   out: bf16[N, param.hidden] = call[rmsnorm](x, w.norm)
 }
 "#;
@@ -653,7 +660,7 @@ transformer(
         match &f.ops[0].kind {
             OpKind::Loop { target, count } => {
                 assert_eq!(target, "layer");
-                assert_eq!(*count, None);
+                assert_eq!(*count, LoopCount::Named("param.layers".to_string()));
             }
             other => panic!("Expected Loop, got {other:?}"),
         }
@@ -671,6 +678,46 @@ transformer(
 
         // Regular params have normal types
         assert_eq!(f.params[0].ty.dtype, "bf16");
+    }
+
+    #[test]
+    fn parse_loop_literal_count() {
+        let src = r#"
+step(x: f32[N, M]) -> (x: f32[N, M]) {
+  x: f32[N, M] = map[mul](x, x)
+}
+main(x: f32[N, M]) -> (x: f32[N, M]) {
+  x: f32[N, M] = loop[step, 5](x)
+}
+"#;
+        let m = parse(src);
+        match &m.functions["main"].ops[0].kind {
+            OpKind::Loop { target, count } => {
+                assert_eq!(target, "step");
+                assert_eq!(*count, LoopCount::Concrete(5));
+            }
+            other => panic!("Expected Loop, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_loop_param_count() {
+        let src = r#"
+ns_step(x: f32[N, M]) -> (x: f32[N, M]) {
+  x: f32[N, M] = map[mul](x, x)
+}
+muon(x: f32[N, M]) -> (x: f32[N, M]) {
+  x: f32[N, M] = loop[ns_step, param.k](x)
+}
+"#;
+        let m = parse(src);
+        match &m.functions["muon"].ops[0].kind {
+            OpKind::Loop { target, count } => {
+                assert_eq!(target, "ns_step");
+                assert_eq!(*count, LoopCount::Named("param.k".to_string()));
+            }
+            other => panic!("Expected Loop, got {other:?}"),
+        }
     }
 
 }

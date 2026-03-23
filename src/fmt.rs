@@ -113,9 +113,13 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("call[{target}]({})", paren.join(", "))
         }
-        OpKind::Loop { target, .. } => {
+        OpKind::Loop { target, count } => {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("loop[{}]({})", target, paren.join(", "))
+            let bracket = match count {
+                LoopCount::Concrete(n) => format!("{target}, {n}"),
+                LoopCount::Named(s) => format!("{target}, {s}"),
+            };
+            format!("loop[{bracket}]({})", paren.join(", "))
         }
     }
 }

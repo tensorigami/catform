@@ -121,6 +121,26 @@ fn scope_ops(
 
 // ── Expansion ───────────────────────────────────────────────────────
 
+fn rename_op_args(op: &Op, renames: &HashMap<String, String>) -> Op {
+    if renames.is_empty() {
+        return op.clone();
+    }
+    Op {
+        kind: op.kind.clone(),
+        outputs: op.outputs.clone(),
+        output_types: op.output_types.clone(),
+        args: op
+            .args
+            .iter()
+            .map(|a| match a {
+                Atom::Name(n) => Atom::Name(renames.get(n).cloned().unwrap_or_else(|| n.clone())),
+                _ => a.clone(),
+            })
+            .collect(),
+        comments: op.comments.clone(),
+    }
+}
+
 fn expand(
     functions: &IndexMap<String, Function>,
     globals: &HashSet<String>,
@@ -129,19 +149,24 @@ fn expand(
     let f = &functions[fn_name];
     let mut ops = Vec::new();
     let mut resolved = HashSet::new();
+    let mut renames: HashMap<String, String> = HashMap::new();
 
     for step in &f.ops {
-        if is_primitive(step) {
-            ops.push(step.clone());
+        let step = rename_op_args(step, &renames);
+
+        if is_primitive(&step) {
+            ops.push(step);
         } else if let OpKind::Call { .. } = &step.kind {
             let (call_ops, call_resolved) =
-                inline_call(functions, globals, step, &step.outputs[0]);
+                inline_call(functions, globals, &step, &step.outputs[0]);
             ops.extend(call_ops);
             resolved.extend(call_resolved);
         } else if let OpKind::Loop { .. } = &step.kind {
-            let (loop_ops, loop_resolved) = inline_loop(functions, globals, step);
+            let (loop_ops, loop_resolved, loop_renames) =
+                inline_loop(functions, globals, &step);
             ops.extend(loop_ops);
             resolved.extend(loop_resolved);
+            renames.extend(loop_renames);
         }
     }
     (ops, resolved)
@@ -196,7 +221,7 @@ fn inline_loop(
     functions: &IndexMap<String, Function>,
     globals: &HashSet<String>,
     loop_op: &Op,
-) -> (Vec<Op>, HashSet<String>) {
+) -> (Vec<Op>, HashSet<String>, HashMap<String, String>) {
     let (target, count) = match &loop_op.kind {
         OpKind::Loop { target, count } => {
             let n = match count {
@@ -234,12 +259,7 @@ fn inline_loop(
     let mut threaded_name = output_name.to_string();
 
     for i in 0..count {
-        let is_last = i == count - 1;
-        let next_threaded = if is_last {
-            output_name.to_string()
-        } else {
-            format!("{output_name}_{}", i + 1)
-        };
+        let next_threaded = format!("{output_name}_{}", i + 1);
 
         // Build synthetic call args
         let mut call_args: Vec<Atom> = Vec::new();
@@ -277,5 +297,9 @@ fn inline_loop(
         threaded_name = next_threaded;
     }
 
-    (ops, resolved)
+    // SSA: final iteration produced output_name_{count}; rename downstream
+    let mut loop_renames = HashMap::new();
+    loop_renames.insert(output_name.to_string(), format!("{output_name}_{count}"));
+
+    (ops, resolved, loop_renames)
 }

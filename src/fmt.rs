@@ -105,9 +105,8 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("contract[{bracket}]({})", paren.join(", "))
         }
-        OpKind::Random { function } => {
-            let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("random[{function}]({})", paren.join(", "))
+        OpKind::Random { lower, upper } => {
+            format!("random[{}, {}]", format_float(*lower), format_float(*upper))
         }
         OpKind::Call { target } => {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();

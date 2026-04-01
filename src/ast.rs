@@ -128,7 +128,8 @@ pub enum OpKind {
         value: LiteralValue,
     },
     Random {
-        function: String,
+        lower: f64,
+        upper: f64,
     },
     Call {
         target: String,
@@ -195,9 +196,10 @@ impl Serialize for Op {
                 map.serialize_entry("kind", "literal")?;
                 map.serialize_entry("value", value)?;
             }
-            OpKind::Random { function } => {
+            OpKind::Random { lower, upper } => {
                 map.serialize_entry("kind", "random")?;
-                map.serialize_entry("function", function)?;
+                map.serialize_entry("lower", lower)?;
+                map.serialize_entry("upper", upper)?;
             }
             OpKind::Call { target } => {
                 map.serialize_entry("kind", "call")?;
@@ -236,6 +238,10 @@ struct OpRaw {
     #[serde(default)]
     value: Option<LiteralValue>,
     #[serde(default)]
+    lower: Option<f64>,
+    #[serde(default)]
+    upper: Option<f64>,
+    #[serde(default)]
     target: String,
     #[serde(default)]
     count: Option<serde_json::Value>,
@@ -272,7 +278,8 @@ impl<'de> Deserialize<'de> for Op {
                 value: r.value.unwrap_or(LiteralValue::Int(0)),
             },
             "random" => OpKind::Random {
-                function: r.function,
+                lower: r.lower.expect("random requires 'lower' field"),
+                upper: r.upper.expect("random requires 'upper' field"),
             },
             "call" => OpKind::Call { target: r.target },
             "loop" => {

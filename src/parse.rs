@@ -394,6 +394,7 @@ fn parse_fn(s: &mut Stream) -> Function {
         let mut pattern: Option<String> = None;
         let mut functions: Vec<String> = Vec::new();
         let mut bracket_ints: Vec<i64> = Vec::new();
+        let mut bracket_floats: Vec<f64> = Vec::new();
         for arg in &bracket_args {
             match arg {
                 Atom::Name(n) if n.contains(' ') || n.contains("->") => {
@@ -401,7 +402,7 @@ fn parse_fn(s: &mut Stream) -> Function {
                 }
                 Atom::Name(n) => functions.push(n.clone()),
                 Atom::Int(n) => bracket_ints.push(*n),
-                _ => {}
+                Atom::Float(f) => bracket_floats.push(*f),
             }
         }
 
@@ -429,7 +430,7 @@ fn parse_fn(s: &mut Stream) -> Function {
         }
 
         // Build OpKind from op name + specifiers
-        let kind = build_op_kind(&op_name, pattern, &functions, &bracket_ints, &bracket_kwargs, axes);
+        let kind = build_op_kind(&op_name, pattern, &functions, &bracket_ints, &bracket_floats, &bracket_kwargs, axes);
 
         ops.push(Op {
             kind,
@@ -456,6 +457,7 @@ fn build_op_kind(
     pattern: Option<String>,
     functions: &[String],
     bracket_ints: &[i64],
+    bracket_floats: &[f64],
     _bracket_kwargs: &IndexMap<String, Atom>,
     axes: IndexMap<String, i64>,
 ) -> OpKind {
@@ -483,7 +485,10 @@ fn build_op_kind(
         "contract" => OpKind::Contract {
             pattern: pattern.unwrap_or_default(),
         },
-        "random" => OpKind::Random { function },
+        "random" => OpKind::Random {
+            lower: *bracket_floats.first().expect("random requires two bounds: random[lo, hi]"),
+            upper: *bracket_floats.get(1).expect("random requires two bounds: random[lo, hi]"),
+        },
         "call" => OpKind::Call { target: function },
         "loop" => {
             let count = if let Some(name) = functions.get(1) {

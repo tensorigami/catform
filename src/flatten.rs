@@ -233,48 +233,36 @@ fn inline_loop(
         _ => unreachable!(),
     };
 
-    let callee = &functions[target];
     let output_name = &loop_op.outputs[0];
 
-    // Classify args by callee param types
-    let mut threaded_idx: Option<usize> = None;
-    let mut dict_indices: Vec<usize> = Vec::new();
-
-    for (i, (arg, param)) in loop_op.args.iter().zip(callee.params.iter()).enumerate() {
-        if let Atom::Name(n) = arg {
-            if n == output_name {
-                threaded_idx = Some(i);
-            } else if is_dict_param(&param.ty) {
-                dict_indices.push(i);
-            }
-        }
-    }
-
-    let threaded_idx = threaded_idx.expect("Loop must have a threaded arg matching output name");
+    // Classify args purely by syntax:
+    //   - matches output name → threaded
+    //   - ends with .* → indexed (strip .*, append .0, .1, ...)
+    //   - everything else → static
+    let threaded_idx = loop_op
+        .args
+        .iter()
+        .position(|a| matches!(a, Atom::Name(n) if n == output_name))
+        .expect("Loop must have a threaded arg matching output name");
 
     let mut ops = Vec::new();
     let mut resolved = HashSet::new();
-
-    // Track current threaded value name
     let mut threaded_name = output_name.to_string();
 
     for i in 0..count {
         let next_threaded = format!("{output_name}_{}", i + 1);
 
-        // Build synthetic call args
         let mut call_args: Vec<Atom> = Vec::new();
         for (j, arg) in loop_op.args.iter().enumerate() {
             if j == threaded_idx {
                 call_args.push(Atom::Name(threaded_name.clone()));
-            } else if dict_indices.contains(&j) {
-                // Dict arg: append iteration index
-                if let Atom::Name(n) = arg {
-                    call_args.push(Atom::Name(format!("{n}.{i}")));
+            } else if let Atom::Name(n) = arg {
+                if let Some(base) = n.strip_suffix(".*") {
+                    call_args.push(Atom::Name(format!("{base}.{i}")));
                 } else {
                     call_args.push(arg.clone());
                 }
             } else {
-                // Scalar: pass through unchanged
                 call_args.push(arg.clone());
             }
         }

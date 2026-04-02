@@ -82,12 +82,16 @@ fn tokenize(source: &str) -> Vec<String> {
             continue;
         }
         // Identifier (may contain dots: param.hidden, model.layers)
+        // Trailing .* marks indexed loop args: weights.layer.*
         if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
             while i < bytes.len()
                 && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
             {
                 i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'*' && i > start && bytes[i - 1] == b'.' {
+                i += 1; // include trailing .*
             }
             tokens.push(source[start..i].to_string());
             continue;

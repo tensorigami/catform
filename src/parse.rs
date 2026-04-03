@@ -628,7 +628,7 @@ rope_rotate(
     }
 
     const MULTI_OUTPUT: &str = r#"
-main(pos: f32[N], tokens: int32[N]) -> (logits: bf16[N, param.vocab]) {
+main(pos: f32[N], tokens: i32[N]) -> (logits: bf16[N, param.vocab]) {
   emb       : bf16[N, param.hidden]                              = call[embed](tokens, model.embed_tokens.weight)
   (cos, sin): (bf16[N, param.rope_dim], bf16[N, param.rope_dim]) = call[rope_setup](pos)
   logits    : bf16[N, param.vocab]                                = call[unembed](emb, model.embed_tokens.weight)

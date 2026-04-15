@@ -189,12 +189,27 @@ fn inline_call(
     let mut rename = HashMap::new();
     let mut dict_renames = HashMap::new();
 
-    for (param, arg) in callee.params.iter().zip(call.args.iter()) {
+    let n_args = call.args.len();
+    let n_params = callee.params.len();
+
+    // When caller passes fewer args than callee has params, the last caller
+    // arg is a subtree base: each remaining callee param name gets dotted onto it.
+    let n_matched = if n_args < n_params { n_args - 1 } else { n_args };
+
+    for (param, arg) in callee.params[..n_matched].iter().zip(call.args.iter()) {
         if let Atom::Name(n) = arg {
             if is_dict_param(&param.ty) {
                 dict_renames.insert(param.name.clone(), n.clone());
             } else {
                 rename.insert(param.name.clone(), n.clone());
+            }
+        }
+    }
+
+    if n_args < n_params {
+        if let Some(Atom::Name(base)) = call.args.last() {
+            for param in &callee.params[n_matched..] {
+                rename.insert(param.name.clone(), format!("{}.{}", base, param.name));
             }
         }
     }

@@ -483,9 +483,16 @@ fn build_op_kind(
         "gather" => OpKind::Gather {
             pattern: pattern.unwrap_or_default(),
         },
-        "scatter" => OpKind::Scatter {
-            pattern: pattern.unwrap_or_default(),
-        },
+        "scatter" => {
+            assert!(
+                !function.is_empty(),
+                "scatter requires a reduction: scatter[pattern, reduction]"
+            );
+            OpKind::Scatter {
+                pattern: pattern.unwrap_or_default(),
+                reduction: function,
+            }
+        }
         "contract" => OpKind::Contract {
             pattern: pattern.unwrap_or_default(),
         },
@@ -729,4 +736,31 @@ muon(x: f32[N, M]) -> (x: f32[N, M]) {
         }
     }
 
+    #[test]
+    fn parse_scatter_with_reduction() {
+        let src = r#"
+write(vals: i32[3, 2], idx: i32[3], target: i32[4, 2]) -> (y: i32[4, 2]) {
+  y: i32[4, 2] = scatter["_ d -> v d", sum](vals, idx, target)
+}
+"#;
+        let m = parse(src);
+        match &m.functions["write"].ops[0].kind {
+            OpKind::Scatter { pattern, reduction } => {
+                assert_eq!(pattern, "_ d -> v d");
+                assert_eq!(reduction, "sum");
+            }
+            other => panic!("Expected Scatter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "scatter requires a reduction")]
+    fn parse_scatter_without_reduction_panics() {
+        let src = r#"
+write(vals: i32[3, 2], idx: i32[3], target: i32[4, 2]) -> (y: i32[4, 2]) {
+  y: i32[4, 2] = scatter["_ d -> v d"](vals, idx, target)
+}
+"#;
+        parse(src);
+    }
 }

@@ -95,10 +95,10 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("gather[{bracket}]({})", paren.join(", "))
         }
-        OpKind::Scatter { pattern } => {
-            let bracket = fmt_atom(&Atom::Name(pattern.clone()));
+        OpKind::Scatter { pattern, reduction } => {
+            let bracket_pat = fmt_atom(&Atom::Name(pattern.clone()));
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("scatter[{bracket}]({})", paren.join(", "))
+            format!("scatter[{bracket_pat}, {reduction}]({})", paren.join(", "))
         }
         OpKind::Contract { pattern } => {
             let bracket = fmt_atom(&Atom::Name(pattern.clone()));

@@ -120,6 +120,7 @@ pub enum OpKind {
     },
     Scatter {
         pattern: String,
+        reduction: String,
     },
     Contract {
         pattern: String,
@@ -184,9 +185,10 @@ impl Serialize for Op {
                 map.serialize_entry("kind", "gather")?;
                 map.serialize_entry("pattern", pattern)?;
             }
-            OpKind::Scatter { pattern } => {
+            OpKind::Scatter { pattern, reduction } => {
                 map.serialize_entry("kind", "scatter")?;
                 map.serialize_entry("pattern", pattern)?;
+                map.serialize_entry("function", reduction)?;
             }
             OpKind::Contract { pattern } => {
                 map.serialize_entry("kind", "contract")?;
@@ -272,7 +274,10 @@ impl<'de> Deserialize<'de> for Op {
                 axes: r.axes,
             },
             "gather" => OpKind::Gather { pattern: r.pattern },
-            "scatter" => OpKind::Scatter { pattern: r.pattern },
+            "scatter" => OpKind::Scatter {
+                pattern: r.pattern,
+                reduction: r.function,
+            },
             "contract" => OpKind::Contract { pattern: r.pattern },
             "literal" => OpKind::Literal {
                 value: r.value.unwrap_or(LiteralValue::Int(0)),

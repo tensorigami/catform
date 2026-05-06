@@ -472,10 +472,16 @@ fn build_op_kind(
             axes,
         },
         "map" => OpKind::Map { function },
-        "fold" => OpKind::Fold {
-            pattern: pattern.unwrap_or_default(),
-            function,
-        },
+        "fold" => {
+            assert!(
+                !function.is_empty(),
+                "fold requires a reduction: fold[pattern, reduction]"
+            );
+            OpKind::Fold {
+                pattern: pattern.unwrap_or_default(),
+                function,
+            }
+        }
         "tile" => OpKind::Tile {
             pattern: pattern.unwrap_or_default(),
             axes,
@@ -759,6 +765,17 @@ write(vals: i32[3, 2], idx: i32[3], target: i32[4, 2]) -> (y: i32[4, 2]) {
         let src = r#"
 write(vals: i32[3, 2], idx: i32[3], target: i32[4, 2]) -> (y: i32[4, 2]) {
   y: i32[4, 2] = scatter["_ d -> v d"](vals, idx, target)
+}
+"#;
+        parse(src);
+    }
+
+    #[test]
+    #[should_panic(expected = "fold requires a reduction")]
+    fn parse_fold_without_reduction_panics() {
+        let src = r#"
+reduce(x: f32[N, D]) -> (y: f32[N]) {
+  y: f32[N] = fold["N D -> N"](x)
 }
 "#;
         parse(src);

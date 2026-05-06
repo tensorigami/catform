@@ -479,7 +479,7 @@ fn build_op_kind(
             );
             OpKind::Fold {
                 pattern: pattern.unwrap_or_default(),
-                function,
+                reduction: function,
             }
         }
         "tile" => OpKind::Tile {
@@ -589,9 +589,9 @@ rmsnorm(x: bf16[N, param.hidden], w: bf16[param.hidden]) -> (out: bf16[N, param.
 
         // Third op: fold["... N d -> ... N 1", mean](sq)
         match &f.ops[2].kind {
-            OpKind::Fold { pattern, function } => {
+            OpKind::Fold { pattern, reduction } => {
                 assert_eq!(pattern, "... N d -> ... N 1");
-                assert_eq!(function, "mean");
+                assert_eq!(reduction, "mean");
             }
             other => panic!("Expected Fold, got {other:?}"),
         }

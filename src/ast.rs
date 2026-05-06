@@ -109,7 +109,7 @@ pub enum OpKind {
     },
     Fold {
         pattern: String,
-        function: String,
+        reduction: String,
     },
     Tile {
         pattern: String,
@@ -169,10 +169,10 @@ impl Serialize for Op {
                 map.serialize_entry("kind", "map")?;
                 map.serialize_entry("function", function)?;
             }
-            OpKind::Fold { pattern, function } => {
+            OpKind::Fold { pattern, reduction } => {
                 map.serialize_entry("kind", "fold")?;
                 map.serialize_entry("pattern", pattern)?;
-                map.serialize_entry("function", function)?;
+                map.serialize_entry("reduction", reduction)?;
             }
             OpKind::Tile { pattern, axes } => {
                 map.serialize_entry("kind", "tile")?;
@@ -188,7 +188,7 @@ impl Serialize for Op {
             OpKind::Scatter { pattern, reduction } => {
                 map.serialize_entry("kind", "scatter")?;
                 map.serialize_entry("pattern", pattern)?;
-                map.serialize_entry("function", reduction)?;
+                map.serialize_entry("reduction", reduction)?;
             }
             OpKind::Contract { pattern } => {
                 map.serialize_entry("kind", "contract")?;
@@ -236,6 +236,8 @@ struct OpRaw {
     #[serde(default)]
     function: String,
     #[serde(default)]
+    reduction: String,
+    #[serde(default)]
     axes: IndexMap<String, i64>,
     #[serde(default)]
     value: Option<LiteralValue>,
@@ -267,7 +269,7 @@ impl<'de> Deserialize<'de> for Op {
             },
             "fold" => OpKind::Fold {
                 pattern: r.pattern,
-                function: r.function,
+                reduction: r.reduction,
             },
             "tile" => OpKind::Tile {
                 pattern: r.pattern,
@@ -276,7 +278,7 @@ impl<'de> Deserialize<'de> for Op {
             "gather" => OpKind::Gather { pattern: r.pattern },
             "scatter" => OpKind::Scatter {
                 pattern: r.pattern,
-                reduction: r.function,
+                reduction: r.reduction,
             },
             "contract" => OpKind::Contract { pattern: r.pattern },
             "literal" => OpKind::Literal {

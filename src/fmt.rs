@@ -77,10 +77,10 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("map[{function}]({})", paren.join(", "))
         }
-        OpKind::Fold { pattern, function } => {
+        OpKind::Fold { pattern, reduction } => {
             let bracket_pat = fmt_atom(&Atom::Name(pattern.clone()));
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("fold[{bracket_pat}, {function}]({})", paren.join(", "))
+            format!("fold[{bracket_pat}, {reduction}]({})", paren.join(", "))
         }
         OpKind::Tile { pattern, axes } => {
             let mut bracket = vec![fmt_atom(&Atom::Name(pattern.clone()))];

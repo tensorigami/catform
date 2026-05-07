@@ -36,14 +36,25 @@ pub fn flatten(m: &Module, entry: &str, cache_keys: &HashSet<String>) -> Module 
 
     let entry_fn = &m.functions[entry];
 
+    // Dedup against user-declared params/returns — cache slots may already be
+    // listed there for documentation; we add only the ones that aren't.
+    let declared_params: HashSet<&str> =
+        entry_fn.params.iter().map(|p| p.name.as_str()).collect();
+    let declared_returns: HashSet<&str> =
+        entry_fn.returns.iter().map(|p| p.name.as_str()).collect();
+
     let mut params = entry_fn.params.clone();
     for slot in &ctx.input_slots {
-        params.push(slot.clone());
+        if !declared_params.contains(slot.name.as_str()) {
+            params.push(slot.clone());
+        }
     }
 
     let mut returns = entry_fn.returns.clone();
     for slot in &ctx.output_slots {
-        returns.push(slot.clone());
+        if !declared_returns.contains(slot.name.as_str()) {
+            returns.push(slot.clone());
+        }
     }
 
     let flat_fn = Function {

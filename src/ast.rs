@@ -139,6 +139,11 @@ pub enum OpKind {
         target: String,
         count: LoopCount,
     },
+    Cache {
+        var: String,
+        init: String,
+        extend: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +220,14 @@ impl Serialize for Op {
                     LoopCount::Named(s) => map.serialize_entry("count", s)?,
                 }
             }
+            OpKind::Cache { var, init, extend } => {
+                map.serialize_entry("kind", "cache")?;
+                map.serialize_entry("var", var)?;
+                map.serialize_entry("init", init)?;
+                if let Some(e) = extend {
+                    map.serialize_entry("extend", e)?;
+                }
+            }
         }
 
         map.serialize_entry("outputs", &self.outputs)?;
@@ -249,6 +262,12 @@ struct OpRaw {
     target: String,
     #[serde(default)]
     count: Option<serde_json::Value>,
+    #[serde(default)]
+    var: String,
+    #[serde(default)]
+    init: String,
+    #[serde(default)]
+    extend: Option<String>,
     outputs: Vec<String>,
     output_types: Vec<Option<TensorType>>,
     args: Vec<Atom>,
@@ -302,6 +321,11 @@ impl<'de> Deserialize<'de> for Op {
                     count,
                 }
             }
+            "cache" => OpKind::Cache {
+                var: r.var,
+                init: r.init,
+                extend: r.extend,
+            },
             other => {
                 return Err(serde::de::Error::custom(format!(
                     "unknown op kind: {other}"

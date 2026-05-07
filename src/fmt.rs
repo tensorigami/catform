@@ -120,6 +120,14 @@ fn fmt_op_rhs(op: &Op) -> String {
             };
             format!("loop[{bracket}]({})", paren.join(", "))
         }
+        OpKind::Cache { var, init, extend } => {
+            let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
+            let bracket = match extend {
+                Some(e) => format!("{var}, {init}, {e}"),
+                None => format!("{var}, {init}"),
+            };
+            format!("cache[{bracket}]({})", paren.join(", "))
+        }
     }
 }
 

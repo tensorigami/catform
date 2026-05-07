@@ -215,6 +215,11 @@ fn op_rule(
             }
             rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
+        OpKind::Cache { init, .. } => {
+            // Type-check as if calling init(args). The cache slot's declared type must
+            // match init's return type. Stateful (extend) form is checked when KV lands.
+            rule_call(init, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
+        }
         OpKind::Literal { .. } | OpKind::Random { .. } => Some(declared.clone()),
     }
 }

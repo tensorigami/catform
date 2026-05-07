@@ -520,6 +520,16 @@ fn build_op_kind(
                 count,
             }
         }
+        "cache" => {
+            let var = functions.first().cloned().unwrap_or_else(|| {
+                panic!("cache requires var name: cache[var, init] or cache[var, init, extend]")
+            });
+            let init = functions.get(1).cloned().unwrap_or_else(|| {
+                panic!("cache requires init function: cache[var, init] or cache[var, init, extend]")
+            });
+            let extend = functions.get(2).cloned();
+            OpKind::Cache { var, init, extend }
+        }
         _ => panic!("Unknown op: {op:?}"),
     }
 }
@@ -776,6 +786,73 @@ write(vals: i32[3, 2], idx: i32[3], target: i32[4, 2]) -> (y: i32[4, 2]) {
         let src = r#"
 reduce(x: f32[N, D]) -> (y: f32[N]) {
   y: f32[N] = fold["N D -> N"](x)
+}
+"#;
+        parse(src);
+    }
+
+    #[test]
+    fn parse_cache_idempotent() {
+        let src = r#"
+build_mask(pos: f32[S]) -> (mask: bf16[S, S]) {
+  mask: bf16[S, S] = map[bf16](pos)
+}
+main(pos: f32[S]) -> (mask: bf16[S, S]) {
+  mask: bf16[S, S] = cache[mask, build_mask](pos)
+}
+"#;
+        let m = parse(src);
+        match &m.functions["main"].ops[0].kind {
+            OpKind::Cache { var, init, extend } => {
+                assert_eq!(var, "mask");
+                assert_eq!(init, "build_mask");
+                assert_eq!(extend, &None);
+            }
+            other => panic!("Expected Cache, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_cache_stateful() {
+        let src = r#"
+kv_init(x: bf16[N, D]) -> (kv: bf16[N, D]) {
+  kv: bf16[N, D] = map[bf16](x)
+}
+kv_extend(prev: bf16[N, D], x: bf16[N, D]) -> (kv: bf16[N, D]) {
+  kv: bf16[N, D] = map[add](prev, x)
+}
+main(x: bf16[N, D]) -> (kv: bf16[N, D]) {
+  kv: bf16[N, D] = cache[kv_buf, kv_init, kv_extend](x)
+}
+"#;
+        let m = parse(src);
+        match &m.functions["main"].ops[0].kind {
+            OpKind::Cache { var, init, extend } => {
+                assert_eq!(var, "kv_buf");
+                assert_eq!(init, "kv_init");
+                assert_eq!(extend, &Some("kv_extend".to_string()));
+            }
+            other => panic!("Expected Cache, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "cache requires var name")]
+    fn parse_cache_without_var_panics() {
+        let src = r#"
+main() -> (y: f32[]) {
+  y: f32[] = cache[]()
+}
+"#;
+        parse(src);
+    }
+
+    #[test]
+    #[should_panic(expected = "cache requires init function")]
+    fn parse_cache_without_init_panics() {
+        let src = r#"
+main() -> (y: f32[]) {
+  y: f32[] = cache[some_var]()
 }
 "#;
         parse(src);

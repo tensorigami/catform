@@ -197,7 +197,7 @@ fn op_rule(
     dict_params: &HashSet<&str>,
 ) -> Option<Ty> {
     match &op.kind {
-        OpKind::Map { function } => rule_map(inputs, declared, function),
+        OpKind::Map { function } => rule_map(inputs, declared, function, loc, errors),
         OpKind::Fold { .. } => rule_fold(inputs, declared),
         OpKind::Tile { .. } => rule_tile(inputs, declared),
         OpKind::View { .. } => rule_view(inputs, declared, loc, errors),
@@ -224,12 +224,31 @@ fn op_rule(
     }
 }
 
-fn rule_map(inputs: &[Option<Ty>], declared: &Ty, function: &str) -> Option<Ty> {
+fn rule_map(
+    inputs: &[Option<Ty>],
+    declared: &Ty,
+    function: &str,
+    loc: &str,
+    errors: &mut Vec<String>,
+) -> Option<Ty> {
     let known: Vec<&Ty> = inputs.iter().filter_map(|t| t.as_ref()).collect();
     if known.is_empty() {
         return None;
     }
-    let ref_ty = known.iter().max_by_key(|t| t.shape.len()).unwrap();
+    // Strict: every input must share the same shape. map lifts a scalar
+    // function elementwise; mismatched shapes require an explicit `tile`
+    // before the map.
+    let ref_ty = known[0];
+    for (i, ty) in known.iter().enumerate().skip(1) {
+        if ty.shape != ref_ty.shape {
+            errors.push(format!(
+                "{loc}: map[{function}] requires all inputs to share the same shape; \
+                 input 0 has shape {:?} but input {i} has shape {:?}. \
+                 Use an explicit `tile` to broadcast first.",
+                ref_ty.shape, ty.shape
+            ));
+        }
+    }
 
     if CAST_FUNCTIONS.contains(&function) {
         return Some(Ty {

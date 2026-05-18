@@ -2,11 +2,12 @@ use crate::ast::*;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn needs_quoting(s: &str) -> bool {
-    s.is_empty()
-        || (!s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[0] != b'_')
-        || s.bytes()
-            .any(|b| !b.is_ascii_alphanumeric() && b != b'_' && b != b'.')
+// A pattern is always a multi-token string ("... n d -> ... n d") — it can
+// never be a bare identifier, so it is quoted unconditionally. The op kind
+// (View/Fold/Tile/Gather/Scatter/Contract) is what makes it a pattern; we
+// quote by position, not by sniffing the bytes.
+fn fmt_pattern(p: &str) -> String {
+    format!("\"{p}\"")
 }
 
 fn fmt_type(t: &TensorType) -> String {
@@ -25,7 +26,6 @@ fn fmt_atom(a: &Atom) -> String {
     match a {
         Atom::Int(n) => n.to_string(),
         Atom::Float(f) => format_float(*f),
-        Atom::Name(s) if needs_quoting(s) => format!("\"{s}\""),
         Atom::Name(s) => s.clone(),
     }
 }
@@ -66,7 +66,7 @@ fn fmt_op_rhs(op: &Op) -> String {
             format!("literal({})", fmt_literal(value))
         }
         OpKind::View { pattern, axes } => {
-            let mut bracket = vec![fmt_atom(&Atom::Name(pattern.clone()))];
+            let mut bracket = vec![fmt_pattern(pattern)];
             for (k, v) in axes {
                 bracket.push(format!("{k}={v}"));
             }
@@ -78,12 +78,12 @@ fn fmt_op_rhs(op: &Op) -> String {
             format!("map[{function}]({})", paren.join(", "))
         }
         OpKind::Fold { pattern, reduction } => {
-            let bracket_pat = fmt_atom(&Atom::Name(pattern.clone()));
+            let bracket_pat = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("fold[{bracket_pat}, {reduction}]({})", paren.join(", "))
         }
         OpKind::Tile { pattern, axes } => {
-            let mut bracket = vec![fmt_atom(&Atom::Name(pattern.clone()))];
+            let mut bracket = vec![fmt_pattern(pattern)];
             for (k, v) in axes {
                 bracket.push(format!("{k}={v}"));
             }
@@ -91,17 +91,17 @@ fn fmt_op_rhs(op: &Op) -> String {
             format!("tile[{}]({})", bracket.join(", "), paren.join(", "))
         }
         OpKind::Gather { pattern } => {
-            let bracket = fmt_atom(&Atom::Name(pattern.clone()));
+            let bracket = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("gather[{bracket}]({})", paren.join(", "))
         }
         OpKind::Scatter { pattern, reduction } => {
-            let bracket_pat = fmt_atom(&Atom::Name(pattern.clone()));
+            let bracket_pat = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("scatter[{bracket_pat}, {reduction}]({})", paren.join(", "))
         }
         OpKind::Contract { pattern } => {
-            let bracket = fmt_atom(&Atom::Name(pattern.clone()));
+            let bracket = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("contract[{bracket}]({})", paren.join(", "))
         }

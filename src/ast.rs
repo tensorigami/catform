@@ -128,6 +128,9 @@ pub enum OpKind {
     Literal {
         value: LiteralValue,
     },
+    /// Index-ramp introduction: `iota(start)` → [start, start+1, ..., start+S-1].
+    /// Length S comes from the output type annotation; `start` rides in `args`.
+    Iota,
     Random {
         lower: f64,
         upper: f64,
@@ -202,6 +205,9 @@ impl Serialize for Op {
             OpKind::Literal { value } => {
                 map.serialize_entry("kind", "literal")?;
                 map.serialize_entry("value", value)?;
+            }
+            OpKind::Iota => {
+                map.serialize_entry("kind", "iota")?;
             }
             OpKind::Random { lower, upper } => {
                 map.serialize_entry("kind", "random")?;
@@ -303,6 +309,7 @@ impl<'de> Deserialize<'de> for Op {
             "literal" => OpKind::Literal {
                 value: r.value.unwrap_or(LiteralValue::Int(0)),
             },
+            "iota" => OpKind::Iota,
             "random" => OpKind::Random {
                 lower: r.lower.expect("random requires 'lower' field"),
                 upper: r.upper.expect("random requires 'upper' field"),

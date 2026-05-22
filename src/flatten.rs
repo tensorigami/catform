@@ -117,10 +117,33 @@ impl<'a> CacheCtx<'a> {
 fn collect_param_names(functions: &IndexMap<String, Function>) -> HashSet<String> {
     let mut names = HashSet::new();
     for f in functions.values() {
+        // Named dims appearing in this function's type annotations.
+        let mut dims: HashSet<String> = HashSet::new();
+        let mut add = |t: &TensorType, dims: &mut HashSet<String>| {
+            for d in &t.shape {
+                if let Dim::Named(n) = d {
+                    dims.insert(n.clone());
+                }
+            }
+        };
+        for p in &f.params {
+            add(&p.ty, &mut dims);
+        }
+        for r in &f.returns {
+            add(&r.ty, &mut dims);
+        }
+        for op in &f.ops {
+            for ot in op.output_types.iter().flatten() {
+                add(ot, &mut dims);
+            }
+        }
+        // Passthrough (never scoped during inlining): `param.X` used as args,
+        // and free dims used as scalar args (a name that is both a Named dim
+        // in this function's types AND an op arg — e.g. `map[add](seen, N)`).
         for op in &f.ops {
             for a in &op.args {
                 if let Atom::Name(n) = a
-                    && n.starts_with("param.")
+                    && (n.starts_with("param.") || dims.contains(n))
                 {
                     names.insert(n.clone());
                 }

@@ -236,8 +236,8 @@ fn op_rule(
         OpKind::Tile { .. } => rule_tile(inputs, declared),
         OpKind::View { .. } => rule_view(inputs, declared, loc, errors),
         OpKind::Contract { .. } => rule_contract(inputs, declared),
-        OpKind::Gather { .. } => rule_gather(inputs, declared, loc, errors),
-        OpKind::Scatter { .. } => rule_scatter(inputs, declared),
+        OpKind::Read { .. } => rule_read(inputs, declared, loc, errors),
+        OpKind::Write { .. } => rule_write(inputs, declared),
         OpKind::Call { target } => {
             rule_call(target, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
@@ -359,7 +359,7 @@ fn rule_contract(inputs: &[Option<Ty>], declared: &Ty) -> Option<Ty> {
     })
 }
 
-fn rule_gather(
+fn rule_read(
     inputs: &[Option<Ty>],
     declared: &Ty,
     loc: &str,
@@ -370,7 +370,7 @@ fn rule_gather(
         && !["int32", "i32", "int64", "i64", "int"].contains(&idx_type.dtype.as_str())
     {
         errors.push(format!(
-            "{loc}: gather index dtype {}, expected integer",
+            "{loc}: read index dtype {}, expected integer",
             idx_type.dtype
         ));
     }
@@ -381,7 +381,7 @@ fn rule_gather(
     })
 }
 
-fn rule_scatter(inputs: &[Option<Ty>], declared: &Ty) -> Option<Ty> {
+fn rule_write(inputs: &[Option<Ty>], declared: &Ty) -> Option<Ty> {
     let dt = inputs.first()?.as_ref()?;
     Some(Ty {
         dtype: dt.dtype.clone(),

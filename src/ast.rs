@@ -115,10 +115,10 @@ pub enum OpKind {
         pattern: String,
         axes: IndexMap<String, i64>,
     },
-    Gather {
+    Read {
         pattern: String,
     },
-    Scatter {
+    Write {
         pattern: String,
         reduction: String,
     },
@@ -189,12 +189,12 @@ impl Serialize for Op {
                     map.serialize_entry("axes", axes)?;
                 }
             }
-            OpKind::Gather { pattern } => {
-                map.serialize_entry("kind", "gather")?;
+            OpKind::Read { pattern } => {
+                map.serialize_entry("kind", "read")?;
                 map.serialize_entry("pattern", pattern)?;
             }
-            OpKind::Scatter { pattern, reduction } => {
-                map.serialize_entry("kind", "scatter")?;
+            OpKind::Write { pattern, reduction } => {
+                map.serialize_entry("kind", "write")?;
                 map.serialize_entry("pattern", pattern)?;
                 map.serialize_entry("reduction", reduction)?;
             }
@@ -300,8 +300,8 @@ impl<'de> Deserialize<'de> for Op {
                 pattern: r.pattern,
                 axes: r.axes,
             },
-            "gather" => OpKind::Gather { pattern: r.pattern },
-            "scatter" => OpKind::Scatter {
+            "read" => OpKind::Read { pattern: r.pattern },
+            "write" => OpKind::Write {
                 pattern: r.pattern,
                 reduction: r.reduction,
             },

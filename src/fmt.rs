@@ -4,7 +4,7 @@ use crate::ast::*;
 
 // A pattern is always a multi-token string ("... n d -> ... n d") — it can
 // never be a bare identifier, so it is quoted unconditionally. The op kind
-// (View/Fold/Tile/Gather/Scatter/Contract) is what makes it a pattern; we
+// (View/Fold/Tile/Read/Write/Contract) is what makes it a pattern; we
 // quote by position, not by sniffing the bytes.
 fn fmt_pattern(p: &str) -> String {
     format!("\"{p}\"")
@@ -97,15 +97,15 @@ fn fmt_op_rhs(op: &Op) -> String {
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
             format!("tile[{}]({})", bracket.join(", "), paren.join(", "))
         }
-        OpKind::Gather { pattern } => {
+        OpKind::Read { pattern } => {
             let bracket = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("gather[{bracket}]({})", paren.join(", "))
+            format!("read[{bracket}]({})", paren.join(", "))
         }
-        OpKind::Scatter { pattern, reduction } => {
+        OpKind::Write { pattern, reduction } => {
             let bracket_pat = fmt_pattern(pattern);
             let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
-            format!("scatter[{bracket_pat}, {reduction}]({})", paren.join(", "))
+            format!("write[{bracket_pat}, {reduction}]({})", paren.join(", "))
         }
         OpKind::Contract { pattern } => {
             let bracket = fmt_pattern(pattern);

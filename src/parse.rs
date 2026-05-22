@@ -319,8 +319,19 @@ fn parse_fn(s: &mut Stream) -> Function {
         }
         let rname = s.advance();
         s.expect(":");
-        let rtype = parse_type(s);
-        returns.push(Param { name: rname, ty: rtype });
+        if s.peek() == Some("*") {
+            s.advance();
+            returns.push(Param {
+                name: rname,
+                ty: TensorType {
+                    dtype: "*".to_string(),
+                    shape: vec![],
+                },
+            });
+        } else {
+            let rtype = parse_type(s);
+            returns.push(Param { name: rname, ty: rtype });
+        }
     }
     s.expect(")");
 
@@ -356,15 +367,32 @@ fn parse_fn(s: &mut Stream) -> Function {
             s.expect(")");
             (names, types)
         } else {
-            // Single output: name [: type] = ...
-            let out_name = s.advance();
-            let out_type = if s.peek() == Some(":") {
-                s.advance();
-                Some(parse_type(s))
-            } else {
-                None
-            };
-            (vec![out_name], vec![out_type])
+            // Single output `name [: type] = ...`, or no-paren multi-output
+            // `name: type, name: type, ... = ...` (comma-separated typed binds,
+            // names may carry a `.*` glob suffix).
+            let mut names = Vec::new();
+            let mut types = Vec::new();
+            loop {
+                names.push(s.advance());
+                let ty = if s.peek() == Some(":") {
+                    s.advance();
+                    if s.peek() == Some("*") {
+                        s.advance();
+                        Some(TensorType { dtype: "*".to_string(), shape: vec![] })
+                    } else {
+                        Some(parse_type(s))
+                    }
+                } else {
+                    None
+                };
+                types.push(ty);
+                if s.peek() == Some(",") {
+                    s.advance();
+                } else {
+                    break;
+                }
+            }
+            (names, types)
         };
 
         s.expect("=");
@@ -502,6 +530,7 @@ fn build_op_kind(
         "contract" => OpKind::Contract {
             pattern: pattern.unwrap_or_default(),
         },
+        "iota" => OpKind::Iota,
         "random" => OpKind::Random {
             lower: *bracket_floats.first().expect("random requires two bounds: random[lo, hi]"),
             upper: *bracket_floats.get(1).expect("random requires two bounds: random[lo, hi]"),

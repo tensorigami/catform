@@ -11,6 +11,9 @@ fn fmt_pattern(p: &str) -> String {
 }
 
 fn fmt_type(t: &TensorType) -> String {
+    if t.dtype == "*" {
+        return "*".to_string();
+    }
     let dims: Vec<String> = t
         .shape
         .iter()
@@ -64,6 +67,10 @@ fn fmt_op_rhs(op: &Op) -> String {
     match &op.kind {
         OpKind::Literal { value } => {
             format!("literal({})", fmt_literal(value))
+        }
+        OpKind::Iota => {
+            let paren: Vec<String> = op.args.iter().map(fmt_atom).collect();
+            format!("iota({})", paren.join(", "))
         }
         OpKind::View { pattern, axes } => {
             let mut bracket = vec![fmt_pattern(pattern)];
@@ -173,33 +180,22 @@ fn fmt_signature(f: &Function, width: usize) -> Vec<String> {
 
 // ── Body ────────────────────────────────────────────────────────────
 
-fn is_multi_output(op: &Op) -> bool {
-    op.outputs.len() > 1
-}
-
-fn name_str(op: &Op) -> String {
-    if is_multi_output(op) {
-        format!("({})", op.outputs.join(", "))
-    } else {
-        op.outputs[0].clone()
-    }
-}
-
-fn type_str(op: &Op) -> String {
-    if is_multi_output(op) {
-        let types: Vec<String> = op
-            .output_types
-            .iter()
-            .filter_map(|t| t.as_ref().map(fmt_type))
-            .collect();
-        if types.is_empty() {
-            String::new()
-        } else {
-            format!("({})", types.join(", "))
-        }
-    } else {
-        op.output_types[0].as_ref().map_or(String::new(), fmt_type)
-    }
+/// A binding is one (name, type) row. A single-output op has one binding; a
+/// multi-output op has one per output, laid out on its own line (no-paren),
+/// with the `= rhs` attached to the last row.
+fn binding_rows(op: &Op) -> Vec<(String, String)> {
+    op.outputs
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let ty = op
+                .output_types
+                .get(i)
+                .and_then(|t| t.as_ref())
+                .map_or(String::new(), fmt_type);
+            (name.clone(), ty)
+        })
+        .collect()
 }
 
 fn fmt_body(f: &Function) -> Vec<String> {
@@ -207,8 +203,17 @@ fn fmt_body(f: &Function) -> Vec<String> {
         return Vec::new();
     }
 
-    let max_name = f.ops.iter().map(|op| name_str(op).len()).max().unwrap_or(0);
-    let max_type = f.ops.iter().map(|op| type_str(op).len()).max().unwrap_or(0);
+    // Align `:` and `=` across every binding row in the function (multi-output
+    // rows participate individually, so one long combined type can't blow up
+    // the alignment).
+    let mut max_name = 0;
+    let mut max_type = 0;
+    for op in &f.ops {
+        for (name, ty) in binding_rows(op) {
+            max_name = max_name.max(name.len());
+            max_type = max_type.max(ty.len());
+        }
+    }
 
     let mut lines = Vec::new();
     for (i, op) in f.ops.iter().enumerate() {
@@ -221,19 +226,23 @@ fn fmt_body(f: &Function) -> Vec<String> {
             }
         }
 
-        let lhs = name_str(op);
         let rhs = fmt_op_rhs(op);
-        let name_pad = " ".repeat(max_name - lhs.len());
-
-        let ts = type_str(op);
-        if !ts.is_empty() {
-            let type_pad = " ".repeat(max_type - ts.len());
-            lines.push(format!("  {lhs}{name_pad}: {ts}{type_pad} = {rhs}"));
-        } else if max_type > 0 {
-            let type_pad = " ".repeat(max_type);
-            lines.push(format!("  {lhs}{name_pad}  {type_pad} = {rhs}"));
-        } else {
-            lines.push(format!("  {lhs}{name_pad} = {rhs}"));
+        let rows = binding_rows(op);
+        let last = rows.len() - 1;
+        for (j, (name, ty)) in rows.iter().enumerate() {
+            let name_pad = " ".repeat(max_name - name.len());
+            if j < last {
+                // Intermediate output of a multi-output op: `name: type,`
+                lines.push(format!("  {name}{name_pad}: {ty},"));
+            } else if !ty.is_empty() {
+                let type_pad = " ".repeat(max_type - ty.len());
+                lines.push(format!("  {name}{name_pad}: {ty}{type_pad} = {rhs}"));
+            } else if max_type > 0 {
+                let type_pad = " ".repeat(max_type);
+                lines.push(format!("  {name}{name_pad}  {type_pad} = {rhs}"));
+            } else {
+                lines.push(format!("  {name}{name_pad} = {rhs}"));
+            }
         }
     }
     lines

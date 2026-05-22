@@ -84,8 +84,33 @@ fn check_function(
         collect_params_from_type(&r.ty, &mut result.constraints.params);
     }
 
+    // Free dims (Named, non-param) from all type annotations — usable as scalars.
+    let mut free_dims: HashSet<String> = HashSet::new();
+    let mut collect_free = |t: &TensorType, set: &mut HashSet<String>| {
+        for d in &t.shape {
+            if let Dim::Named(n) = d
+                && !n.starts_with("param.")
+            {
+                set.insert(n.clone());
+            }
+        }
+    };
+    for p in &f.params {
+        if p.ty.dtype != "*" {
+            collect_free(&p.ty, &mut free_dims);
+        }
+    }
+    for r in &f.returns {
+        collect_free(&r.ty, &mut free_dims);
+    }
     for op in &f.ops {
-        check_op(fn_name, op, &env, functions, &dict_params, result);
+        for ot in op.output_types.iter().flatten() {
+            collect_free(ot, &mut free_dims);
+        }
+    }
+
+    for op in &f.ops {
+        check_op(fn_name, op, &env, functions, &dict_params, &free_dims, result);
         for (out_name, out_type) in op.outputs.iter().zip(op.output_types.iter()) {
             if let Some(t) = out_type {
                 env.insert(out_name.clone(), ty_from_tensor_type(t));
@@ -95,6 +120,11 @@ fn check_function(
     }
 
     for ret in &f.returns {
+        // A `*` glob return (e.g. `state: *`) names a dict whose members are
+        // produced individually; there's no single env var to match.
+        if ret.ty.dtype == "*" {
+            continue;
+        }
         let rtype = ty_from_tensor_type(&ret.ty);
         if let Some(actual) = env.get(&ret.name) {
             if let Some(err) = types_match(actual, &rtype) {
@@ -127,6 +157,7 @@ fn check_op(
     env: &HashMap<String, Ty>,
     functions: &indexmap::IndexMap<String, Function>,
     dict_params: &HashSet<&str>,
+    free_dims: &HashSet<String>,
     result: &mut CheckResult,
 ) {
     let out_name = &op.outputs[0];
@@ -145,6 +176,9 @@ fn check_op(
                 None
             }
             Atom::Name(n) if is_dict_access(n, dict_params) => None,
+            // A free dim used as a scalar value (e.g. `map[sub](N, one)`),
+            // mirroring how `param.X` dims are usable as scalars.
+            Atom::Name(n) if free_dims.contains(n) => None,
             Atom::Name(n) => {
                 local_errors.push(format!("{loc}: input '{n}' not in scope"));
                 None
@@ -220,7 +254,7 @@ fn op_rule(
             // match init's return type. Stateful (extend) form is checked when KV lands.
             rule_call(init, op, inputs, functions, declared, loc, errors, constraints, fn_name, dict_params)
         }
-        OpKind::Literal { .. } | OpKind::Random { .. } => Some(declared.clone()),
+        OpKind::Literal { .. } | OpKind::Random { .. } | OpKind::Iota => Some(declared.clone()),
     }
 }
 
